@@ -4,6 +4,11 @@
 
 Released after the test beta (GitHub branch `0.114beta1`). Many parts are contributed by **Brano, [brjanicek](https://github.com/brjanicek)** (marked *by Brano*).
 
+### Package fix (13 Nov 2026)
+
+- The first 0.114 package was missing `adsb.py`, so the server did not start (`No module named 'adsb'`). The packages were rebuilt; the package builder now stops when a module imported by the program is not packaged.
+- Windows Defender could report the upgrade zip as `Trojan:Script/Sabsik.FL.A!ml` (a false positive of its automatic heuristic). The program no longer starts PowerShell for this: the DSD decoder download falls back only to `curl.exe` of Windows, the upgrade from the page ends leftover decoders through the Windows API, and install.bat makes the desktop shortcuts without `-ExecutionPolicy Bypass`. The `.bat` files in the package have Windows line endings.
+
 ### Main Features
 
 - **DYN key – weak HF voices out of the noise.** A new key **DYN** in **AUDIO**, right of ALC, for AM / LSB / USB / CW. It makes weak signals easier to hear in the noise: the noise between words is turned down, the speech stays at its full level, so the voice stands out of the noise instead of drowning in it. Two parts, both on by default and ticked in SETTINGS › AUDIO › DYN:
