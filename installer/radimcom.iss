@@ -1,5 +1,5 @@
 ﻿; RADIMCOM setup (Inno Setup 6). Built by installer/make_installer.py, which passes:
-;   /DAppVersion=0.115beta1 /DVersionNumeric=0.115.0.1 /DBuildDir=<staged program> /DOutDir=<dist> /DIconFile=<ico>
+;   /DAppVersion=0.115rc1 /DVersionNumeric=0.115.0.101 /DBuildDir=<staged program> /DOutDir=<dist> /DIconFile=<ico>
 ;   /DDsdVersion=<VERSION of install_dsd.py>
 ; One setup for a new installation and for an upgrade: an upgrade keeps the folder and data\ (settings, memories,
 ; logs, recordings). No administrator rights (installed per user); only the USB drivers ask for them.

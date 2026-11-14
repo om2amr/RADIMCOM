@@ -1,8 +1,8 @@
 # Changelog
 
-## Ver. 0.115beta1
+## Ver. 0.115rc1
 
-Test beta (GitHub branch `0.115beta1`).
+Release candidate (GitHub branch `0.115rc1`; continues the test beta `0.115beta1`).
 
 ### Extra: setup instead of ZIP – easier installation and upgrades
 

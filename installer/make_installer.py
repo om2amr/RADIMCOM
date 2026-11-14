@@ -30,7 +30,7 @@ TOP = "RADIMCOM"
 
 def read_version():
     html = open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read()
-    m = re.search(r'class="r-ver">\s*Ver\.\s*([0-9.]+(?:beta\d+)?)\s*<', html)
+    m = re.search(r'class="r-ver">\s*Ver\.\s*([0-9.]+(?:(?:beta|rc)\d+)?)\s*<', html)
     if not m:
         sys.exit("version not found in static/index.html (.r-ver)")
     return m.group(1)
@@ -244,9 +244,12 @@ def python_runtime():
 
 
 def numeric_version(v):
-    """0.115beta1 -> 0.115.0.1, 0.115 -> 0.115.1.0 (Windows file versions are numbers; a beta is older than its release)."""
-    m = re.fullmatch(r"(\d+)\.(\d+)(?:beta(\d+))?", v)
-    return f"{m.group(1)}.{m.group(2)}." + (f"0.{m.group(3)}" if m.group(3) else "1.0")
+    """0.115beta1 -> 0.115.0.1, 0.115rc1 -> 0.115.0.101, 0.115 -> 0.115.1.0 (Windows file versions are numbers;
+    beta < release candidate < release)."""
+    m = re.fullmatch(r"(\d+)\.(\d+)(?:(beta|rc)(\d+))?", v)
+    if not m.group(3):
+        return f"{m.group(1)}.{m.group(2)}.1.0"
+    return f"{m.group(1)}.{m.group(2)}.0.{int(m.group(4)) + (100 if m.group(3) == 'rc' else 0)}"
 
 
 def iscc():

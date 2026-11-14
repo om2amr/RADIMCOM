@@ -80,8 +80,8 @@ Change log
 ----------
 (also in CHANGELOG.md)
 
-Ver. 0.115beta1
-(test beta, GitHub branch 0.115beta1)
+Ver. 0.115rc1
+(release candidate, GitHub branch 0.115rc1; continues the test beta 0.115beta1)
 Extra: setup instead of ZIP - easier installation and upgrades
 - Until 0.114 RADIMCOM was a ZIP: install.bat needed Python on the PC, created .venv and downloaded about
   60 MB of Python packages from the internet - the most common source of problems.
