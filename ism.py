@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-from paths import BASE
+from paths import BASE, data
 
 EXE = os.path.join(BASE, "lib", "ism", "rtl_433.exe")
 # A rate rtl_433 lists as valid. It covers all of 433.05-434.79 MHz, and the spectrum is twice as fast as at 1.024 MS/s
@@ -62,6 +62,24 @@ METER_MERGE_S = 3600.0        # Wireless M-Bus meters (hundreds around a block o
 SAME_PACKET_S = 0.5           # two decoders reporting one packet (same level and frequency) come this close together
 TCP_QUEUE = 64                # raw blocks waiting for rtl_433; more = it is stuck, drop
 MAX_HISTORY = 500
+# devices (DEVICES and TIMELINE views): one entry per model + ID + channel, with its latest values
+MAX_DEVICES = 300             # the least recently heard one goes (passing cars with TPMS, meters of a block of flats)
+DEV_TIMES_S = 3600.0          # message times kept for the timeline
+DEV_TIMES_MAX = 400
+SERIES_STEP_S = 300           # temperature / humidity history: one point per 5 minutes (the latest value in it)
+SERIES_KEEP_S = 86400.0
+SERIES_FIELDS = ("temperature_C", "humidity")
+ACT_STEP_S = 300              # activity for DEVICES / TIMELINE at 6 h and 24 h: messages per 5 minutes for 24 h
+HIST_STEP_S = 60              # detail of one device (its tab with charts): one point per minute for 24 h, all numbers
+HIST_KEEP_S = 86400.0
+HIST_SKIP = {"battery_ok"}    # shown as a state, not a curve
+RATE_MINUTES = 60             # messages per minute, for the sparkline in the header
+NEW_KEEP_S = 600              # a device never heard before on this PC is marked NEW this long
+# names, pins and hidden devices given in the page; devices heard on this PC (for NEW); station-wide, all VFOs
+NAMES_FILE = data("ism_devices.json")
+KNOWN_FILE = data("ism_known.json")
+KNOWN_KEEP_DAYS = 60          # a device not heard this long is forgotten (comes NEW again)
+KNOWN_SAVE_S = 60.0
 
 # fields with their own column, or not worth showing
 _COLUMNS = {"time", "model", "id", "channel", "mod", "freq", "freq1", "freq2", "rssi", "snr", "noise", "protocol", "mic"}
@@ -109,6 +127,64 @@ def message_text(j):
             parts.append("encrypted")
         return " · ".join(parts)
     return " · ".join(_field(k, v) for k, v in j.items() if k not in _COLUMNS)
+
+
+def message_fields(j):
+    """The same fields as message_text, as values (numbers stay numbers) for the device cards."""
+    keys = _MBUS_KEEP if str(j.get("model", "")).startswith("Wireless-MBus") else [k for k in j if k not in _COLUMNS]
+    out = {}
+    for k in keys:
+        v = j.get(k)
+        if v is None or v == "":
+            continue
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            v = v if isinstance(v, bool) else _clean(v)[:80]
+        out[_clean(k)[:40]] = v
+    if str(j.get("model", "")).startswith("Wireless-MBus") and j.get("payload_encrypted"):
+        out["encrypted"] = True
+    return out
+
+
+def load_names():
+    """{device key: {"name", "pin", "hide"}} from data/ism_devices.json."""
+    try:
+        with open(NAMES_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def set_name(key, name=None, pin=None, hide=None):
+    """Changes the name, pin or hidden flag of one device; returns all names. Read again first: other VFOs write too."""
+    key = _clean(key)[:200]
+    names = load_names()
+    e = dict(names.get(key) or {})
+    if name is not None:
+        e["name"] = _clean(name).strip()[:40]
+    if pin is not None:
+        e["pin"] = bool(pin)
+    if hide is not None:
+        e["hide"] = bool(hide)
+    e = {k: v for k, v in e.items() if v}
+    if e:
+        names[key] = e
+    else:
+        names.pop(key, None)
+    tmp = NAMES_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(names, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, NAMES_FILE)
+    return names
+
+
+def _load_known():
+    try:
+        with open(KNOWN_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        return {str(k): float(v) for k, v in d.items()} if isinstance(d, dict) else {}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
 
 
 class Channel:
@@ -358,6 +434,10 @@ class IsmDecoder:
         self.lock = threading.Lock()
         self.chans = []
         self.not_before = 0.0
+        self.devices = collections.OrderedDict()   # device key -> device, the least recently heard first
+        self.rate = collections.deque(maxlen=RATE_MINUTES)   # [minute, messages]
+        self.known = None             # device key -> last heard (epoch s); loaded with the first message
+        self.known_saved = 0.0
 
     # ---------- control ----------
 
@@ -386,17 +466,123 @@ class IsmDecoder:
                 "raw": self.raw, "raw_count": self.raw_count,
                 "running": bool(self.chans) and all(c.conn is not None for c in self.chans),
                 "channels": [round(c.start_hz + self.center_hz - self.start_hz) for c in self.chans],
-                "channel_rates": [c.fs for c in self.chans]}
+                "channel_rates": [c.fs for c in self.chans], "rate": self._rate_list(),
+                "center_hz": self.center_hz, "fs": self.fs}
+
+    def _rate_list(self):
+        """Messages per minute, the last RATE_MINUTES minutes, the oldest first (0 for a quiet minute)."""
+        now_min = int(time.time() // 60)
+        by_min = dict(self.rate)
+        return [by_min.get(m, 0) for m in range(now_min - RATE_MINUTES + 1, now_min + 1)]
 
     def messages(self):
         with self.lock:
             return list(self.history)
 
+    def device_list(self):
+        with self.lock:
+            return [self._dev_public(d) for d in self.devices.values()]
+
     def clear(self):
         with self.lock:
             self.history.clear()
+            self.devices.clear()
+            self.rate.clear()
             self.count = self.raw_count = 0
         self._emit_state()
+
+    # ---------- devices ----------
+
+    @staticmethod
+    def _dev_public(d):
+        """A device for the page; its detail history only on request (device_history)."""
+        out = {k: v for k, v in d.items() if k != "hist"}
+        return dict(out, times=list(d["times"]), series=[list(p) for p in d["series"]], fields=dict(d["fields"]),
+                    act=[list(p) for p in d["act"]])
+
+    def device_history(self, key):
+        """The device and its history for its tab: [[minute, messages, rssi, snr, {field: number}], ...] for 24 h."""
+        with self.lock:
+            d = self.devices.get(key)
+            if d is None:
+                return None
+            return dict(self._dev_public(d), hist=[[t, n, r, s, dict(f)] for t, n, r, s, f in d["hist"]])
+
+    def _dev_key(self, model, dev_id, channel):
+        """One key for a device also when more decoders of rtl_433 read it (the alphabetically first of their names)."""
+        return f"{min(self.aliases.get(model, {model}))}|{dev_id}|{channel}"
+
+    def _device(self, model, row, fields, now):
+        """Updates the device of a message (under self.lock); returns its public copy."""
+        key = self._dev_key(model, row["dev_id"], row["channel"])
+        d = self.devices.pop(key, None)
+        if d is None:
+            if self.known is None:
+                self.known = _load_known()
+            d = {"key": key, "model": row["model"], "dev_id": row["dev_id"], "channel": row["channel"], "first": now,
+                 "n": 0, "fields": {}, "times": collections.deque(maxlen=DEV_TIMES_MAX), "series": [], "hist": [], "act": [],
+                 "new": key not in self.known}
+            while len(self.devices) >= MAX_DEVICES:
+                self.devices.popitem(last=False)
+        self.devices[key] = d                           # the most recently heard last
+        d.update(last=now, model=row["model"], freq_hz=row["freq_hz"], rssi=row["rssi"], snr=row["snr"],
+                 mod=row["mod"], protocol=row["protocol"], mic=row["mic"])
+        d["n"] += 1
+        d["fields"] = fields
+        d["times"].append(round(now, 1))
+        while d["times"] and now - d["times"][0] > DEV_TIMES_S:
+            d["times"].popleft()
+        vals = [fields.get(k) if isinstance(fields.get(k), (int, float)) and not isinstance(fields.get(k), bool) else None
+                for k in SERIES_FIELDS]
+        if any(v is not None for v in vals):
+            t = int(now // SERIES_STEP_S) * SERIES_STEP_S
+            s = d["series"]
+            if s and s[-1][0] == t:
+                s[-1] = [t] + vals
+            else:
+                s.append([t] + vals)
+            while s and now - s[0][0] > SERIES_KEEP_S:
+                s.pop(0)
+        ta = int(now // ACT_STEP_S) * ACT_STEP_S
+        a = d["act"]
+        if a and a[-1][0] == ta:
+            a[-1][1] += 1
+        else:
+            a.append([ta, 1])
+        while a and now - a[0][0] > HIST_KEEP_S:
+            a.pop(0)
+        nums = {k: v for k, v in fields.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool) and k not in HIST_SKIP}
+        t = int(now // HIST_STEP_S) * HIST_STEP_S
+        h = d["hist"]
+        if h and h[-1][0] == t:                          # the latest values of the minute, its message count
+            h[-1] = [t, h[-1][1] + 1, row["rssi"], row["snr"], nums]
+        else:
+            h.append([t, 1, row["rssi"], row["snr"], nums])
+        while h and now - h[0][0] > HIST_KEEP_S:
+            h.pop(0)
+        self.known[key] = now
+        return self._dev_public(d)
+
+    def _save_known(self, now):
+        """Devices heard on this PC to data/ism_known.json, at most once a minute (merged: other VFOs write too)."""
+        if self.known is None or now - self.known_saved < KNOWN_SAVE_S:
+            return
+        self.known_saved = now
+        with self.lock:
+            mine = list(self.known.items())
+        try:
+            merged = _load_known()
+            for k, t in mine:
+                merged[k] = max(t, merged.get(k, 0))
+            old = now - KNOWN_KEEP_DAYS * 86400
+            merged = {k: round(t) for k, t in merged.items() if t >= old}
+            tmp = KNOWN_FILE + f".{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(merged, f)
+            os.replace(tmp, KNOWN_FILE)
+        except OSError:
+            pass
 
     # ---------- samples from the receiver thread ----------
 
@@ -473,6 +659,7 @@ class IsmDecoder:
         dev_id = "" if j.get("id") is None else _clean(j["id"])
         channel = "" if j.get("channel") is None else _clean(j["channel"])
         text = message_text(j)
+        fields = message_fields(j)
         pkt = [mhz, j.get("rssi"), j.get("snr")]     # equal for every decoder that read the same packet
         meter = model.startswith("Wireless-MBus")
         window = METER_MERGE_S if meter else REPEAT_S
@@ -502,7 +689,7 @@ class IsmDecoder:
                     row["pkt"] = pkt
                     row["rssi"], row["snr"] = j.get("rssi"), j.get("snr")
                     if meter:                             # a meter: one row per meter, its latest message
-                        row["text"], row["freq_hz"] = text, freq_hz
+                        row["text"], row["freq_hz"], row["fields"] = text, freq_hz, fields
                     self.history.remove(row)              # the newest activity last (the page moves it to the top)
                     self.history.append(row)
                     m = dict(row)
@@ -510,15 +697,33 @@ class IsmDecoder:
             if m is None:
                 m = {"id": self.next_id, "time": round(now, 1), "last": now, "n": 1, "freq_hz": freq_hz, "model": model,
                      "models": [model], "pkt": pkt, "chan": ch.start_hz,
-                     "dev_id": dev_id, "channel": channel, "text": text, "mod": _clean(j.get("mod", "")),
+                     "dev_id": dev_id, "channel": channel, "text": text, "fields": fields, "mod": _clean(j.get("mod", "")),
                      "rssi": j.get("rssi"), "snr": j.get("snr"), "protocol": j.get("protocol"), "mic": _clean(j.get("mic", ""))}
                 self.next_id += 1
                 self.history.append(m)
                 m = dict(m)
+            dev = None
             if not m.get("again"):
                 self.count += 1
+                self._count_rate(now)
+                dev = self._device(model, m, fields, now)
+                m["dev"] = dev["key"]
+                for row in self.history:              # the row keeps the key (a later "again" copy has it too)
+                    if row["id"] == m["id"]:
+                        row["dev"] = dev["key"]
+                        break
         self.on_event("ism", m)
+        if dev:
+            self.on_event("ismdev", dev)
+            self._save_known(now)
         self._emit_state()
+
+    def _count_rate(self, now):
+        minute = int(now // 60)
+        if self.rate and self.rate[-1][0] == minute:
+            self.rate[-1][1] += 1
+        else:
+            self.rate.append([minute, 1])
 
     def _handle_raw(self, b, ch):
         """A package of pulses no decoder read (pulse analyzer of rtl_433)."""

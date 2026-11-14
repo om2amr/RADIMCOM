@@ -48,7 +48,7 @@ except ImportError:
     sattrack = None
 from ft8 import FT8_FREQS, Ft8Decoder
 from cw import CwDecoder
-from rtty import RttyDecoder
+from rtty import RttyDecoder, station_list as rtty_station_list
 from packet import PacketDecoder
 from pocsag import PocsagDecoder
 from daylog import DayLog, TextLog
@@ -61,6 +61,7 @@ from acars import ACARS_FREQS, AcarsDecoder
 from vdl2 import VDL2_CENTER, VDL2_RATE, VDL2_REGIONS, Vdl2Decoder, region_freqs
 from dsd import PROTOCOLS as DSD_PROTOCOLS, SLOTS as DSD_SLOTS, DsdDecoder
 from dab import CHANNEL_HZ, DAB_CHANNELS, DAB_DEFAULT, DAB_RATE, DabDecoder
+import ism as ism_mod
 from ism import ISM_DEFAULT, ISM_FREQS, ISM_RATE, IsmDecoder
 import hfdl as hfdl_mod
 from hfdl import HfdlDecoder
@@ -806,7 +807,7 @@ def api_cw_cmd():
 
 @app.route("/api/rtty", methods=["GET"])
 def api_rtty():
-    return jsonify(rtty.info())
+    return jsonify(dict(rtty.info(), stations=rtty_station_list()))
 
 
 @app.route("/api/rtty", methods=["POST"])
@@ -814,6 +815,13 @@ def api_rtty_cmd():
     body = request.get_json(force=True)
     if body.get("action") == "clear":
         rtty.clear()
+    if body.get("action") == "viz":                 # renewed by the page every ~2 s while the RTTY page is open
+        rtty.want_viz()
+    if body.get("action") == "focus":               # click in the mini waterfall; hz null = the whole passband
+        try:
+            rtty.set_focus(None if body.get("hz") is None else float(body["hz"]))
+        except (TypeError, ValueError):
+            return jsonify({"error": "bad RTTY focus"}), 400
     if "opts" in body:
         try:
             rtty.set_options(body["opts"])
@@ -1085,13 +1093,25 @@ def set_adsb(on, changes):
 
 @app.route("/api/ism", methods=["GET"])
 def api_ism():
-    return jsonify(dict(ism.info(), messages=ism.messages()))
+    if request.args.get("dev"):                # one device with its 24 h history (its tab in DEVICES)
+        d = ism.device_history(request.args["dev"])
+        return jsonify(d) if d else (jsonify(error="unknown device"), 404)
+    return jsonify(dict(ism.info(), messages=ism.messages(), devices=ism.device_list(), names=ism_mod.load_names()))
 
 
 @app.route("/api/ism", methods=["POST"])
 def api_ism_cmd():
-    if request.get_json(force=True).get("action") == "clear":
+    body = request.get_json(force=True)
+    if body.get("action") == "clear":
         ism.clear()
+    elif body.get("action") == "name" and body.get("key"):
+        # name, pin or hide of one device (data/ism_devices.json, all VFOs): the other pages get it with the next load
+        try:
+            names = ism_mod.set_name(str(body["key"]), body.get("name"), body.get("pin"), body.get("hide"))
+        except OSError as e:
+            return jsonify(error=str(e)), 500
+        hub.event("ismnames", names)
+        return jsonify(names=names)
     return jsonify(ism.info())
 
 

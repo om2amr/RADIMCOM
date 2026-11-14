@@ -425,14 +425,38 @@
         <label class="wf-opt">POLARITY
           <select id="rttyPol"><option value="auto">Auto</option><option value="normal">Normal</option><option value="reverse">Reverse</option></select>
         </label>
-        <span class="txt-info" id="rttyInfo"></span>
+        <span class="rt-badges search" id="rttyBadges">
+          <span class="rt-badge" id="rtBaud" title="Speed (Bd)">— Bd</span>
+          <span class="rt-badge" id="rtShift" title="Shift between mark and space (Hz)">— Hz</span>
+          <span class="rt-badge" id="rtPol" title="Polarity: NORM = mark is the higher RF tone, REV = reversed">NORM</span>
+          <span class="rt-badge" id="rtFigs" title="Baudot shift: LTRS = letters, FIGS = figures. Text full of digits and punctuation = a lost LTRS (it comes back at the next space).">LTRS</span>
+          <span class="rt-badge rt-sync" id="rtSync" hidden></span>
+          <span class="rt-snr" id="rtSnr" title="SNR of the weaker tone"></span>
+        </span>
+        <select id="rttyGo" class="rt-go" title="Known RTTY transmissions: choose one to tune there (USB, the signal in the passband)"><option value="">KNOWN…</option></select>
+        <span class="rt-station" id="rttyStation"></span>
         <label class="wf-opt log-opt" title="Write to the daily log data\logs\rtty_YYYY-MM-DD.txt (UTC, shared by all VFOs)"><input type="checkbox" data-log="rtty">LOG</label>
         <button id="rttyClear" class="key small" title="Clear text">CLR</button>
       </div>
       <p class="note">Baudot (ITA2). Shift, speed and polarity are detected automatically from the two tones in the filter passband
         (any mode; use USB/LSB with a filter wide enough for both tones). Mark = the higher RF tone (normal).
-        E.g. amateur RTTY 45.45 Bd / 170 Hz, DWD weather 50 Bd / 450 Hz.</p>
-      <div class="txt-out" id="rttyText"><span id="rttyEmpty" class="cw-empty">waiting for an RTTY signal…</span></div>
+        E.g. amateur RTTY 45.45 Bd / 170 Hz, DWD weather 50 Bd / 450 Hz. Dim amber characters = recent framing errors.</p>
+      <div class="rt-main">
+        <div class="txt-out" id="rttyText"><span id="rttyEmpty" class="cw-empty">waiting for an RTTY signal…</span></div>
+        <div class="rt-ind">
+          <div class="bands" id="rttyView">
+            <button class="key small" data-view="cross" title="Crossed ellipses like on old RTTY terminals: mark = horizontal, space = vertical. A clean, well tuned signal draws a sharp +; round or tilted shapes = mistuning, wrong shift or noise.">CROSS</button>
+            <button class="key small" data-view="wf" title="Mini waterfall of the filter passband with the found tones (M = mark, S = space). Click a signal: the decoder looks for the tone pair only there (AUTO = the whole passband again).">WF</button>
+            <button class="key small" data-view="bars" title="Level of the mark and space tone above the noise (dB) and the tuning error (needle, ±50 Hz)">BARS</button>
+            <button class="key small" data-view="eye" title="Eye diagram: the demodulated signal from one bit before to one bit after each bit decision. Open eye = clean reception.">EYE</button>
+          </div>
+          <canvas id="rttyScope"></canvas>
+          <div class="rt-ind-foot">
+            <span class="rt-ind-info" id="rttyIndInfo">–</span>
+            <button id="rttyAuto" class="key small" hidden title="Forget the clicked signal: look for the tones in the whole passband again">AUTO</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section class="card ft8 pkt" id="packetCard" data-dec="packet" hidden>
@@ -861,15 +885,47 @@
       <div class="ft8-head">
         <button id="ismKey" class="key small" data-dec-on="ism" title="ISM: 433 / 868 MHz devices such as weather sensors and remote controls (rtl_433). Sets the VFO to 2.048 MS/s and mutes its audio; turns ACARS, VDL2 and DAB off. RTL-SDR only.">ON</button>
         <div class="bands" id="ismBands"></div>
+        <button id="ismInfoKey" class="key small" title="Show / hide the description of the decoder">INFO</button>
         <span id="ismInfo" class="muted"></span>
+        <div class="bands" id="ismViews">
+          <button class="key small on" data-view="msgs" title="All received messages, the latest activity on top">MESSAGES</button>
+          <button class="key small" data-view="devs" title="A card for each device: its latest values, a 24 h curve of temperature and humidity, battery, signal, how often it sends. Pin, name or hide a device with the keys on its card.">DEVICES</button>
+          <button class="key small" data-view="tl" title="When each device sent: at 1 h a dot for each message, at 6 h / 24 h a block for each 5 minutes with messages (brighter = more)">TIMELINE</button>
+          <button class="key small ism-devtab" id="ismDevTab" data-view="dev" title="The tab of one device: its values as charts over 1 h, 6 h or 24 h (a click on a card in DEVICES opens it, ✕ closes it). Drag over a chart to zoom all charts in, double click to zoom out." hidden></button>
+        </div>
+        <div class="bands" id="ismRange" title="Time shown: the curves and activity on the cards (DEVICES), the timeline (TIMELINE) and the charts of a device tab" hidden>
+          <button class="key small" data-h="1">1 h</button><button class="key small" data-h="6">6 h</button><button class="key small" data-h="24">24 h</button>
+        </div>
         <label class="wf-opt log-opt" title="Write to the daily log data\logs\ism_YYYY-MM-DD.txt (UTC, shared by all VFOs; a repeated message once)"><input type="checkbox" data-log="ism">LOG</label>
-        <label class="wf-opt" title="RAW: also show packages of pulses no decoder of rtl_433 could read (grey rows): modulation guess, pulses, length and the demodulated bits; ⧉ opens the pulses at triq.org/pdv. Many of them are noise or unknown devices. Not written to the log."><input type="checkbox" id="ismRaw">RAW</label>
-        <button id="ismClear" class="key small" title="Clear the list">CLR</button>
+        <label class="wf-opt" title="RAW: also show packages of pulses no decoder of rtl_433 could read (grey rows): modulation guess, pulses, length and the demodulated bits, with a small picture of the pulses; ⧉ opens them at triq.org/pdv. Many of them are noise or unknown devices. Not written to the log."><input type="checkbox" id="ismRaw">RAW</label>
+        <label class="wf-opt" title="Also show the devices hidden with ⊘ on their card"><input type="checkbox" id="ismHidden">HIDDEN</label>
+        <button id="ismClear" class="key small" title="Clear the list, the devices and the statistics">CLR</button>
       </div>
-      <p class="note">Devices on 433 and 868 MHz: weather sensors, remote controls, tyre sensors and more, decoded by rtl_433.
+      <div class="ism-bar">
+        <div class="ism-cats" id="ismCats"></div>
+        <input id="ismFilter" class="pkt-filter" type="search" placeholder="filter" title="Show only messages and devices containing this text (model, name, ID, values)">
+        <div class="ism-stats"><canvas id="ismRate"></canvas><span id="ismStatText"></span></div>
+      </div>
+      <p class="note" id="ismNote" hidden>Devices on 433 and 868 MHz: weather sensors, remote controls, tyre sensors and more, decoded by rtl_433.
         The VFO runs at 2.048 MS/s and its audio is muted; RADIMCOM cuts narrow channels of 256 kHz out of it for rtl_433 (433.92 and 433.42 MHz, or 868.30 and 868.95 MHz), which decodes about twice as many messages as the whole band at once. The buttons centre the VFO.
-        Gain stays the VFO's: a nearby sensor can overload the dongle at high gain. RTL-SDR only.</p>
-      <div class="ft8-table">
+        Gain stays the VFO's: a nearby sensor can overload the dongle at high gain. RTL-SDR only.
+        Names, pins and hidden devices are kept in data\ism_devices.json (all VFOs); NEW = a device never heard on this PC in the last 60 days (data\ism_known.json).</p>
+      <div class="ism-devs" id="ismDevBox" hidden>
+        <div class="ism-grid" id="ismDevGrid"></div>
+        <div id="ismDevEmpty" class="ft8-empty">No devices yet. Many sensors send only once a minute or less often.</div>
+      </div>
+      <div class="ism-det" id="ismDetBox" hidden>
+        <div class="ism-det-top">
+          <div class="ism-det-head" id="ismDetHead"></div>
+        </div>
+        <div class="ism-det-charts" id="ismDetCharts"></div>
+      </div>
+      <div class="ism-tl" id="ismTlBox" hidden>
+        <div class="ism-tl-axis" id="ismTlAxis"></div>
+        <div id="ismTlRows"></div>
+        <div id="ismTlEmpty" class="ft8-empty">No device heard in the last hour.</div>
+      </div>
+      <div class="ft8-table" id="ismMsgBox">
         <table>
           <colgroup><col class="c-utc"><col class="c-freq"><col class="c-dev"><col class="c-id"><col class="c-ch"><col class="c-level"><col></colgroup>
           <thead><tr><th>UTC</th><th title="Frequency in MHz">Freq</th><th>Device</th><th title="Device ID sent in the message; some devices pick a new one when the battery is changed">ID</th><th title="Channel set on the device">Ch</th><th title="Signal level and signal to noise ratio; the tooltip has the modulation">RSSI / SNR</th><th>Data</th></tr></thead>

@@ -10,6 +10,10 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ism  # noqa: E402
 
+# the devices heard go to a temporary file, not to data\ism_known.json of this PC
+import tempfile  # noqa: E402
+ism.KNOWN_FILE = os.path.join(tempfile.gettempdir(), "radimcom_test_ism_known.json")
+
 FS = 2048000
 N = 262144
 

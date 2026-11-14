@@ -87,7 +87,17 @@ of that VFO (orange LED): that VFO stays audible at CUE level while another VFO 
     header), AUTO follows the strongest again, CLR empties the table (stations on the air come back with empty text). The decoder measures the noise and the mark level
     itself, so it does not depend on the ALC or the volume.
     Details: [CW decoder](decoders/cw.md).
-  - RTTY: SHIFT, BAUD and POLARITY (Auto or fixed), CLR.
+  - RTTY: SHIFT, BAUD and POLARITY (Auto or fixed), CLR. The info line has backlit badges (speed, shift, polarity
+    NORM / REV, Baudot shift LTRS / FIGS; green while locked, blinking while searching), the SNR as an LED bar and the
+    known transmission at the frequency (DWD Pinneberg, amateur RTTY segments). **KNOWN…** lists these transmissions:
+    choosing one tunes the VFO there (USB, the signal in the passband) and switches the decoder on. Amber **NO BAUDOT** = a strong FSK
+    signal whose characters keep failing the start / stop check (synchronous or encrypted data): its text is not
+    written (with Auto speed the other speeds are tried first, **CHECKING Bd**). The text runs out like on a teletype
+    with a blinking cursor; characters after recent framing errors are dim amber; the UTC time is in the left margin
+    at each new line and after a pause. Right of the text a tuning indicator, switched with
+    **CROSS** (crossed ellipses: mark horizontal, space vertical, a sharp + = well tuned), **WF** (mini waterfall of the
+    passband with the tones M / S; a click there = look for the tones only around that point, **AUTO** = whole passband
+    again), **BARS** (mark / space level above the noise, tuning error needle ±50 Hz) and **EYE** (eye diagram).
 
     ![RTTY decoder receiving the DWD weather broadcast: 50 Bd, 445 Hz shift and reverse polarity detected automatically](images/decoders_rtty.png)
 

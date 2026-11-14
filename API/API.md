@@ -98,7 +98,7 @@ Main fields:
 | `wf` | waterfall format: `bins`, `db_min`, `db_step`, `rows_per_s` |
 
 `/api/state` also returns the constants `sample_rates`, `modes`, `ft8_freqs`, `acars_freqs`, `vdl2_freqs` (channels of the
-selected region), `vdl2_region_freqs` (`{"eu": […], "us": […]}`), `vdl2_center`, `vdl2_rate`, `dab_channels` (`[[name, Hz], …]`), `ism_freqs`. The state has `ism`, `ism_error` and `ism_hz`; `GET /api/ism` gives the decoder state with the last `messages`, `POST /api/ism` with `{"action": "clear"}` clears them. HFDL: `hfdl_bands` (`[{lo, hi, center, n}]` in Hz) and
+selected region), `vdl2_region_freqs` (`{"eu": […], "us": […]}`), `vdl2_center`, `vdl2_rate`, `dab_channels` (`[[name, Hz], …]`), `ism_freqs`. The state has `ism`, `ism_error` and `ism_hz`; `GET /api/ism` gives the decoder state with the last `messages`, the `devices` (as in `ismdev`, up to 300) and the `names`; `GET /api/ism?dev=<key>` one device with its `hist` (`[[minute, messages, rssi, snr, {field: number}], …]`, one point per minute for 24 h; 404 for an unknown key). `POST /api/ism` with `{"action": "clear"}` clears the messages and devices, `{"action": "name", "key": …, "name": …, "pin": bool, "hide": bool}` changes one device (any of the three; empty name = the model name) and gives all `names`. HFDL: `hfdl_bands` (`[{lo, hi, center, n}]` in Hz) and
 `hfdl_stations` (`[{id, name, lat, lon, freqs_khz}]`); the state has `hfdl` and `hfdl_error`; `GET /api/hfdl` gives the decoder
 state (`channels` decoded now, `heard` ground stations, counters) with the last `messages`, `POST /api/hfdl` with `{"action": "clear"}` clears them. Each message has `ac` (ADS-B data, `{"found": false}` when not seen, `null` while
 `lookup` is true); the event `hfdlinfo` (`{id, ac}`) brings it later. AIS: `ais_center` (162000000) and `ais_channels` (`[161975000, 162025000]`);
@@ -176,7 +176,8 @@ On connect a `status` event with the full state, then:
 | `meter` | S-meter level in dBFS, `{"db": -73.5}`, for every block of samples (as often as `wf`) |
 | `ft8`, `ft8cycle`, `ft8stclear` | FT8 decode (with `ts`, and `call` / `grid` / `lat` / `lon` of the transmitting station when the message has them); start of a 15 s cycle; the station map was cleared |
 | `cwchan`, `cwtext`, `cwstate` | CW: new characters of a station (`id`, `t`, per-character confidence `c` 0–9); the same for the followed station only (`t`, `c`: log, audio bubble); decoder state once a second (followed station, `channels` with the end of their text and timing `profile`) |
-| `rttytext`, `rttystate` | RTTY text; decoder state |
+| `rttytext`, `rttystate` | RTTY text (`q`: one character per text character, "1" sure / "0" after recent framing errors); decoder state |
+| `rttyviz` | RTTY tuning indicator data, 10× a second, only for about 3 s after each `POST /api/rtty {"action": "viz"}` |
 | `packet`, `packetstate` | PACKET: one valid AX.25 frame (see `/api/packet`); decoder state (counters, AFC, error) |
 | `pocsag`, `pocsagstate` | POCSAG: one pager message (see `/api/pocsag`); decoder state (counters) |
 | `packetspec` | PACKET spectrum, 4× per second while asked for: `db` (2·`k`+1 values, dB relative to a full-scale carrier, the tuned frequency in the middle), `df` (Hz per value), `afc_live` (9600 Bd AFC, Hz, or null) |
@@ -188,7 +189,9 @@ On connect a `status` event with the full state, then:
 | `vdl2state` | VDL2 decoder state |
 | `dabstate` | DAB state (channel, welle-cli connected, dongle on channel, error) |
 | `adsb`, `adsbstate` | ADS-B: changed aircraft and new messages once a second; decoder state (see `/api/adsb`) |
-| `ism`, `ismstate` | ISM device message (the same `id` again = the repeat count `n` of a message grew); decoder state (`enabled`, `error`, `count`, `dropped`, `running`, `raw`, `raw_count`, `channels` = centres of the rtl_433 channels, `channel_rates` = their sample rates); a RAW row has `raw: true`, `view` (triq.org link) and `flex` |
+| `ism`, `ismstate` | ISM device message (the same `id` again = the repeat count `n` of a message grew); decoder state (`enabled`, `error`, `count`, `dropped`, `running`, `raw`, `raw_count`, `channels` = centres of the rtl_433 channels, `channel_rates` = their sample rates); a RAW row has `raw: true`, `view` (triq.org link) and `flex`. A decoded message has `fields` (its values, numbers as numbers) and `dev` (device key `model|id|channel`); `ismstate` has `rate` (messages per minute, the last 60 minutes, the oldest first) |
+| `ismdev` | an ISM device after a new message of it: `key`, `model`, `dev_id`, `channel`, `first`, `last`, `n`, `fields`, `freq_hz`, `rssi`, `snr`, `mod`, `protocol`, `mic`, `new` (not heard on this PC in 60 days), `times` (message times of the last hour), `series` ([t, °C, %] per 5 min, 24 h), `act` ([t, messages] per 5 min, 24 h) |
+| `ismnames` | names, pins and hidden ISM devices changed: `{key: {name, pin, hide}}` (`data\ism_devices.json`, all VFOs) |
 
 A comment line `: ping` is sent every 15 s when nothing else happens.
 
@@ -218,8 +221,8 @@ is removed. 0 dB is a sine at 75 kHz deviation. Outside WFM, `db` is empty and `
 | GET, DELETE | `/api/ft8/stations` | FT8 stations heard in the last 24 h (call, locator + lat/lon, newest message, SNR, frequency, `ts`, `n`); DELETE clears them |
 | GET | `/api/cw` | CW skimmer: `span`, the followed station (`cur`, `follow`, `station`, `tone_hz`, `freq_hz`, `wpm`, `snr_db`), all `channels` (tone, frequency, WPM, SNR, call, key type, the last 300 characters `text` with `conf`, timing profile), `text` of the followed station and its confidence `conf` (one digit 0–9 per character). `?id=3`: the whole text of one station (`text`, `conf`; 404 when it is gone) |
 | POST | `/api/cw` | `{"action": "clear"}`; `{"action": "follow", "id": 3}` follows a skimmer station (`null` = automatic, the strongest); `{"action": "options", "span": "filter" \| "wide"}` (saved to the config) |
-| GET | `/api/rtty` | RTTY decoder info and text |
-| POST | `/api/rtty` | `{"action": "clear"}` and/or `{"opts": {...}}` (decoder options, saved to the config) |
+| GET | `/api/rtty` | RTTY decoder info and text; also `q`, `figs`, `sync`, `probing`, `frames_ok`, `focus_hz`, `station` (known transmission at the frequency) and `stations` (`[{name, group, kind, hz}]`, the KNOWN… list) |
+| POST | `/api/rtty` | `{"action": "clear"}` and/or `{"opts": {...}}` (decoder options, saved to the config); `{"action": "viz"}` sends `rttyviz` events for the next ~3 s (the page renews it every 2 s); `{"action": "focus", "hz": <Hz or null>}` looks for the tones only around that audio frequency (`null` = the whole passband) |
 | GET | `/api/pocsag` | POCSAG decoder: state (`ok` messages, `batches`, `corrected` bits, `bad` codewords, `rates`), the last 500 `messages` (`ric`, `func`, `baud`, `inverted`, `kind` = `alpha` / `numeric` / `tone`, `text`, both readings `alpha` and `numeric`, `corrected`, `bad`) and the `rics` (newest message of each address) |
 | POST | `/api/pocsag` | `{"action": "clear"}` and/or `{"opts": {"rate": "all" \| "512" \| "1200" \| "2400"}}` (saved to the config) |
 | GET | `/api/packet` | PACKET decoder: state, the last 500 `frames` and the APRS `stations` (newest first) |

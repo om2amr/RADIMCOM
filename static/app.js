@@ -6841,25 +6841,127 @@ $("cwSpan").addEventListener("change", () => cwPost({ action: "options", span: $
 $("cwAuto").addEventListener("click", () => cwPost({ action: "follow", id: null }));
 
 // ---------- ISM: 433 / 868 MHz devices (rtl_433; the VFO feeds it through rtl_tcp) ----------
+// Three views: MESSAGES (every message, the latest activity on top), DEVICES (a card per device with its latest
+// values and a 24 h curve of temperature / humidity) and TIMELINE (a dot for each message of a device in the last
+// hour). The category chips, the filter and HIDDEN apply to all three. Names, pins and hidden devices are
+// station-wide (data\ism_devices.json).
 
 const ISM_MAX_ROWS = 500;
 const ISM_TITLE = $("ismKey").title;   // tooltip from index.html (replaced on a device without ISM and a chained VFO)
 let ismLast = {};   // the status sends only on/off and the error; the counts come from ismstate
+const ismDevs = new Map();             // device key -> device from the server (latest values, message times, series)
+let ismNames = {};                     // device key -> {name, pin, hide}
+let ismView = recall("ismView") || "msgs";
+let ismCatsOff = new Set();
+try { ismCatsOff = new Set(JSON.parse(recall("ismCatsOff") || "[]")); } catch { /* an old value */ }
+let ismShowHidden = false;
+const ismFlash = new Set();            // device cards to flash at the next render
+let ismRange = [1, 6, 24].includes(Number(recall("ismRange"))) ? Number(recall("ismRange")) : 6;   // hours shown in DEVICES, TIMELINE and the device tab
+
+// category: [key, icon, label]
+const ISM_CATS = [["weather", "🌡", "Weather"], ["tpms", "🚗", "TPMS"], ["remote", "🔑", "Remotes"],
+  ["security", "🚪", "Security"], ["alarm", "🔥", "Alarms"], ["meter", "⚡", "Meters"], ["other", "📡", "Other"],
+  ["raw", "❓", "RAW"]];
+const ISM_CAT = Object.fromEntries(ISM_CATS.map(([k, icon, label]) => [k, { icon, label }]));
+const ISM_WEATHER_KEYS = ["temperature_C", "humidity", "wind_avg_km_h", "wind_avg_m_s", "wind_max_km_h", "rain_mm",
+  "pressure_hPa", "light_lux", "uv", "moisture"];
+
+/** Category of a device from its model name and fields (rtl_433 has no categories of its own). */
+function ismCat(model, fields) {
+  model = model || "";
+  fields = fields || {};
+  const has = (keys) => keys.some((k) => k in fields);
+  if (model === "RAW") return "raw";
+  // rtl_433 marks tyre sensors with type TPMS; they report the tyre pressure in kPa / PSI (weather stations in hPa)
+  if (/TPMS|tyre|tire/i.test(model) || fields.type === "TPMS" || has(["pressure_kPa", "pressure_PSI"])) return "tpms";
+  if (/MBus|Meter|Energy|Power|Gas|Kamstrup|Itron|Efergy|CurrentCost|OWL|Elster/i.test(model)
+    || has(["power_W", "energy_kWh", "current_A", "volume_m3", "total_m3", "consumption"])) return "meter";
+  if (/Smoke|Fire|Alarm|Heat|Leak|Flood/i.test(model)) return "alarm";
+  if (has(ISM_WEATHER_KEYS)) return "weather";
+  if (/Door|Window|Contact|Motion|PIR|Secur|Magnet|Vibration/i.test(model)) return "security";
+  if (/Remote|Button|Switch|Key|Fob|Bell|Somfy|Nexa|Proove|Intertechno|Garage|Gate|Princeton|EV1527|Chuango|Smartwares|HT680|Opener|Silvercrest|Brennenstuhl|Elro|Car/i.test(model)
+    || has(["button", "cmd", "command", "state", "code", "event"])) return "remote";
+  return "other";
+}
+
+const ismName = (key, model) => (ismNames[key] && ismNames[key].name) || model;
+const ismIsHidden = (key) => !!(key && ismNames[key] && ismNames[key].hide);
+const ismIsPinned = (key) => !!(key && ismNames[key] && ismNames[key].pin);
+
+/** Category chips, filter and HIDDEN: is this message / device shown? */
+function ismPass(cat, key, text) {
+  if (ismCatsOff.has(cat)) return false;
+  if (ismIsHidden(key) && !ismShowHidden) return false;
+  const q = $("ismFilter").value.trim().toLowerCase();
+  return !q || text.toLowerCase().includes(q);
+}
+
+/** Pulses of a RAW package as a small picture: from the rfraw code of the triq.org/pdv link (AAB1, nibble bit 3 =
+ *  high level, bits 0-2 = the duration bucket), else from the demodulated bits {n}hex. "" when there is neither. */
+function ismPulseSvg(view, text) {
+  let seg = [];
+  const r = ((view || "").split("#")[1] || "").split(/[+;:]/)[0].replace(/[^0-9A-Fa-f]/g, "").toUpperCase();
+  if (r.startsWith("AAB1") && r.length > 8) {
+    let p = 4;
+    const nb = parseInt(r.substr(p, 2), 16);
+    p += 2;
+    const bins = [];
+    for (let k = 0; k < nb; k++, p += 4) bins.push(parseInt(r.substr(p, 4), 16));
+    for (; p + 2 <= r.length && seg.length < 600; p += 2) {
+      const b = parseInt(r.substr(p, 2), 16);
+      if (b === 0x55) break;
+      for (const x of [b >> 4, b & 15]) seg.push([(x & 8) !== 0, bins[x & 7] || 0]);
+    }
+  }
+  if (!seg.length) {
+    const m = /\{(\d+)\}([0-9a-f]+)/i.exec(text || "");
+    if (m) {
+      const nbits = Math.min(Number(m[1]), m[2].length * 4, 256);
+      for (let i = 0; i < nbits; i++) seg.push([((parseInt(m[2][i >> 2], 16) >> (3 - (i & 3))) & 1) === 1, 1]);
+    }
+  }
+  if (!seg.length) return "";
+  const durs = seg.map((s) => s[1]).filter((d) => d > 0).sort((a, b) => a - b);
+  const cap = (durs[durs.length >> 1] || 1) * 8;      // long gaps would leave the pulses as hairlines
+  let x = 0;
+  const pts = [];
+  for (const [hi, d] of seg) {
+    const y = hi ? 1 : 11;
+    pts.push(`${x.toFixed(1)},${y}`);
+    x += Math.min(d || 0, cap);
+    pts.push(`${x.toFixed(1)},${y}`);
+  }
+  if (!x) return "";
+  return `<svg class="ism-pulse" viewBox="0 0 ${x.toFixed(1)} 12" preserveAspectRatio="none" aria-hidden="true">` +
+    `<polyline points="${pts.join(" ")}" vector-effect="non-scaling-stroke"/></svg>`;
+}
 
 function ismRow(tr, m) {
+  const key = m.dev || "";
+  const cat = ismCat(m.model, m.fields);
   tr.classList.toggle("raw", !!m.raw);
+  tr.dataset.cat = cat;
+  tr.dataset.key = key;
+  const name = ismName(key, m.model);
+  tr.dataset.q0 = `${m.model} ${m.dev_id} ${m.channel} ${m.text}`;
+  tr.dataset.q = `${name} ${tr.dataset.q0}`;
+  tr.hidden = !ismPass(cat, key, tr.dataset.q);
   const level = m.rssi == null ? "-" : `${Number(m.rssi).toFixed(1)} / ${Number(m.snr).toFixed(1)} dB`;
   const utc = (t) => new Date(t * 1000).toISOString().slice(11, 19);
+  const pulses = m.raw ? ismPulseSvg(m.view, m.text) : "";
   tr.innerHTML = `<td title="${m.n > 1 ? `first ${utc(m.time)} UTC, last ${utc(m.last || m.time)} UTC` : ""}">${utc(m.last || m.time)}</td><td>${fmtMHz(m.freq_hz, 3)}</td>` +
-    `<td class="dev" title="${escHtml(m.model)}${m.protocol ? ` · rtl_433 protocol ${escHtml(m.protocol)}` : ""}${(m.models || []).length > 1 ? " · the same packet read by more decoders of rtl_433" : ""}">${escHtml(m.model)}</td>` +
+    `<td class="dev" title="${escHtml(m.model)}${m.protocol ? ` · rtl_433 protocol ${escHtml(m.protocol)}` : ""}${(m.models || []).length > 1 ? " · the same packet read by more decoders of rtl_433" : ""} · ${ISM_CAT[cat].label}">` +
+    `<span class="ism-ico">${ISM_CAT[cat].icon}</span>${escHtml(name)}${name !== m.model ? ` <small>${escHtml(m.model)}</small>` : ""}</td>` +
     `<td class="id" title="${escHtml(m.dev_id)}">${escHtml(m.dev_id || "-")}</td><td>${escHtml(m.channel || "-")}</td>` +
-    `<td title="${escHtml(m.mod)}">${level}</td>` +
-    `<td class="data" title="${escHtml(m.raw ? `Not decoded${m.flex ? ` · rtl_433 flex decoder: ${m.flex}` : ""}` : m.mic ? `Check: ${m.mic}` : "")}">${escHtml(m.text)}` +
+    `<td title="${escHtml(m.mod)}">${ismBars(m.snr)} ${level}</td>` +
+    `<td class="data" title="${escHtml(m.raw ? `Not decoded${m.flex ? ` · rtl_433 flex decoder: ${m.flex}` : ""}` : m.mic ? `Check: ${m.mic}` : "")}">` +
+    `${m.mic ? `<span class="ism-mic" title="Message check passed: ${escHtml(m.mic)}">✓</span>` : ""}${pulses}${escHtml(m.text)}` +
     `${m.view ? `<a class="pdv" href="${escHtml(m.view)}" target="_blank" rel="noopener" title="Show the pulses at triq.org/pdv">⧉</a>` : ""}` +
     `${m.n > 1 ? `<span class="rep" title="Same message received ${m.n} times, each within ${m.raw ? "10 s" : "1 min"} of the previous one">×${m.n}</span>` : ""}</td>`;
 }
 
-function addIsm(m) {
+/** live: a new message (the row flashes); false while the list loads. */
+function addIsm(m, live = true) {
   const tb = $("ismRows");
   let tr = tb.querySelector(`tr[data-id="${m.id}"]`);   // a repeat or a second decoder of an earlier row
   if (!tr) {
@@ -6870,12 +6972,21 @@ function addIsm(m) {
   if (tb.firstElementChild !== tr) tb.prepend(tr);      // the latest activity on top
   ismRow(tr, m);
   $("ismEmpty").hidden = true;
+  if (live) {
+    tr.classList.remove("flash");
+    void tr.offsetWidth;                                 // restarts the animation
+    tr.classList.add("flash");
+  }
 }
 
 function ismReset() {
   ismLast = {};
+  ismDevs.clear();
+  ismDet = null;
   $("ismRows").innerHTML = "";
   $("ismEmpty").hidden = false;
+  if (ismView === "dev") renderIsmDet();
+  ismRenderSoon();
 }
 
 async function ismLoad() {
@@ -6883,10 +6994,15 @@ async function ismLoad() {
   try {
     const d = await fetch(vbase + "/api/ism").then((r) => r.json());
     if (v !== active) return;
+    ismNames = d.names || {};
+    ismDevs.clear();
+    for (const x of d.devices || []) ismDevs.set(x.key, x);
     $("ismRows").innerHTML = "";
-    for (const m of d.messages) addIsm(m);
+    for (const m of d.messages) addIsm(m, false);
     $("ismEmpty").hidden = d.messages.length > 0;
     renderIsmInfo(d);
+    ismRenderSoon();
+    if (ismView === "dev") ismDetLoad();
   } catch { /* an older receiver without ISM */ }
 }
 
@@ -6898,6 +7014,7 @@ function renderIsmInfo(d) {
   el.textContent = !i.enabled ? "" : i.running === false ? "starting rtl_433…"
     : `${i.count || 0} messages${i.raw_count ? ` · ${i.raw_count} raw` : ""}${i.dropped ? ` · ${i.dropped} blocks dropped` : ""}`;
   if (i.channels && i.channels.length) el.title = `rtl_433 channels: ${i.channels.map((f, k) => `${fmtMHz(f, 3)} MHz (${Math.round((i.channel_rates || [])[k] / 1000) || "?"} kS/s)`).join(", ")}`;
+  if (d.rate) ismStatsSoon();
 }
 
 function renderIsm(s) {
@@ -6942,6 +7059,601 @@ $("ismClear").addEventListener("click", () => {
   ismReset();
   renderIsmInfo({ count: 0 });
 });
+
+// ----- ISM: devices, timeline, statistics -----
+
+/** Signal strength as 5 bars from the SNR (dB). */
+function ismBars(snr) {
+  const n = snr == null ? 0 : snr >= 24 ? 5 : snr >= 18 ? 4 : snr >= 12 ? 3 : snr >= 7 ? 2 : snr >= 3 ? 1 : 0;
+  let s = "";
+  for (let i = 1; i <= 5; i++) s += `<i class="${i <= n ? "on" : ""}" style="height:${20 + i * 16}%"></i>`;
+  return `<span class="ism-bars" title="${snr == null ? "no level" : `SNR ${Number(snr).toFixed(1)} dB`}">${s}</span>`;
+}
+
+/** Typical time between the messages of a device (median, s), null with fewer than 3 messages. */
+function ismInterval(times) {
+  const d = [];
+  for (let i = 1; i < (times || []).length; i++) { const x = times[i] - times[i - 1]; if (x > 2) d.push(x); }
+  if (d.length < 2) return null;
+  d.sort((a, b) => a - b);
+  return d[d.length >> 1];
+}
+const ismDur = (s) => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${(s / 60).toFixed(s < 600 ? 1 : 0)} min` : `${(s / 3600).toFixed(1)} h`;
+const ismAge = (t) => { const s = Math.max(0, Date.now() / 1000 - t); return s < 5 ? "now" : `${ismDur(s)} ago`; };
+
+/** Stale (a device that keeps sending went quiet: 3 intervals, at least 5 min) and gone (30 min). */
+function ismStaleClass(d) {
+  const age = Date.now() / 1000 - d.last, iv = ismInterval(d.times);
+  return age > 1800 ? "gone" : age > Math.max(300, 3 * (iv || 100)) ? "stale" : "";
+}
+
+function ismCompass(dir) {
+  if (dir == null) return "";
+  return `<svg class="ism-compass" viewBox="-20 -20 40 40" aria-hidden="true"><circle r="17"/><text y="-9">N</text>` +
+    `<path transform="rotate(${Number(dir) + 180})" d="M0,-14 L5,6 L0,2 L-5,6 Z"/></svg>`;
+}
+
+/** 24 h curve of temperature (yellow) and humidity (dashed blue) of a device. */
+/** Messages of a device in the last hour as ticks (the curve slot of a card without temperature / humidity). */
+/** Messages of a device in the shown time (the curve slot of a card without temperature / humidity):
+ *  1 h a tick per message, 6 h / 24 h a bar per 5 minutes as high as its message count. */
+function ismActivity(d) {
+  const R = ismRange * 3600, now = Date.now() / 1000, t0 = now - R, X = (t) => (((t - t0) / R) * 200).toFixed(1);
+  let marks = "", n = 0;
+  if (ismRange === 1) {
+    const t = (d.times || []).filter((x) => x >= t0);
+    n = t.length;
+    marks = t.map((x) => `<line x1="${X(x)}" x2="${X(x)}" y1="8" y2="38"/>`).join("");
+  } else {
+    const a = (d.act || []).filter((p) => p[0] + 300 > t0);
+    const max = Math.max(1, ...a.map((p) => p[1])), w = Math.max(0.6, (300 / R) * 200 - 0.4);
+    n = a.reduce((sum, p) => sum + p[1], 0);
+    marks = a.map(([t, c]) => { const h = 4 + (c / max) * 32; return `<rect x="${X(Math.max(t, t0))}" y="${(39 - h).toFixed(1)}" width="${w.toFixed(2)}" height="${h.toFixed(1)}"/>`; }).join("");
+  }
+  return `<svg class="ism-act-svg" viewBox="0 0 200 40" preserveAspectRatio="none"><title>Messages in the last ${ismRange} h: ${n}</title>` +
+    `<line class="base" x1="0" y1="39.5" x2="200" y2="39.5"/>${marks}</svg>` +
+    `<div class="ism-spark-lbl"><span>${ismRange} h</span><span>${n} message${n === 1 ? "" : "s"}</span></div>`;
+}
+
+function ismSpark(series) {
+  const R = ismRange * 3600, now = Date.now() / 1000, t0 = now - R;
+  series = (series || []).filter((p) => p[0] + 300 >= t0);    // 5 min points: 12 in 1 h
+  if (series.length < 2) return "";
+  const line = (k) => {
+    const pts = series.filter((p) => p[k] != null);
+    if (pts.length < 2) return ["", null, null];
+    const v = pts.map((p) => p[k]);
+    let lo = Math.min(...v), hi = Math.max(...v);
+    if (hi - lo < 2) { const c = (hi + lo) / 2; lo = c - 1; hi = c + 1; }
+    return [pts.map((p) => `${(((Math.max(p[0], t0) - t0) / R) * 200).toFixed(1)},${(36 - ((p[k] - lo) / (hi - lo)) * 32).toFixed(1)}`).join(" "),
+      Math.min(...v), Math.max(...v)];
+  };
+  const [tp, tlo, thi] = line(1), [hp, hlo, hhi] = line(2);
+  if (!tp && !hp) return "";
+  const tip = [tp && `temperature ${tlo.toFixed(1)} … ${thi.toFixed(1)} °C`, hp && `humidity ${Math.round(hlo)} … ${Math.round(hhi)} %`]
+    .filter(Boolean).join(", ");
+  return `<svg class="ism-spark" viewBox="0 0 200 40" preserveAspectRatio="none"><title>Last ${ismRange} h: ${tip}</title>` +
+    `<line x1="0" y1="39.5" x2="200" y2="39.5"/>${hp ? `<polyline class="hum" points="${hp}"/>` : ""}${tp ? `<polyline class="temp" points="${tp}"/>` : ""}</svg>` +
+    (tp ? `<div class="ism-spark-lbl"><span>${ismRange} h</span><span>${tlo.toFixed(1)} … ${thi.toFixed(1)} °C</span></div>` : "");
+}
+
+const ISM_BIG = [["temperature_C", "°C", 1, "temp"], ["humidity", "%", 0, "hum"], ["moisture", "%", 0, "hum"]];
+const ISM_SMALL = [["pressure_hPa", "hPa", 1], ["pressure_kPa", "kPa", 1], ["wind_max_km_h", "km/h gust", 1],
+  ["wind_max_m_s", "m/s gust", 1], ["rain_mm", "mm rain", 1], ["rain_rate_mm_h", "mm/h", 1], ["uv", "UV", 1],
+  ["light_lux", "lux", 0], ["power_W", "W", 0], ["energy_kWh", "kWh", 2], ["battery_mV", "mV", 0]];
+const ISM_SHOWN = new Set([...ISM_BIG, ...ISM_SMALL].map((x) => x[0]).concat(["battery_ok", "wind_avg_km_h", "wind_avg_m_s", "wind_dir_deg"]));
+
+function ismCard(d) {
+  const f = d.fields || {}, key = d.key, cat = ismCat(d.model, f);
+  const name = ismName(key, d.model), pin = ismIsPinned(key), hid = ismIsHidden(key);
+  const num = (v, dec) => (typeof v === "number" ? v.toFixed(dec) : escHtml(v));
+  let big = ISM_BIG.filter(([k]) => f[k] != null).map(([k, u, dec, cls]) => `<span class="v ${cls}">${num(f[k], dec)}<u>${u}</u></span>`).join("");
+  const wind = f.wind_avg_km_h ?? (f.wind_avg_m_s != null ? f.wind_avg_m_s * 3.6 : null);
+  if (wind != null) big += `<span class="v wind">${ismCompass(f.wind_dir_deg)}${Number(wind).toFixed(1)}<u>km/h</u></span>`;
+  const small = ISM_SMALL.filter(([k]) => f[k] != null).map(([k, u, dec]) => `<span>${num(f[k], dec)} ${u}</span>`)
+    .concat(Object.entries(f).filter(([k]) => !ISM_SHOWN.has(k))
+      .map(([k, v]) => `<span>${k === "type_string" || v === true ? escHtml(k === "type_string" ? v : k) : `${escHtml(k)}=${escHtml(v)}`}</span>`));
+  const batt = f.battery_ok == null ? "" : `<span class="ism-batt ${f.battery_ok ? "ok" : "low"}" title="Battery ${f.battery_ok ? "OK" : "LOW"}"></span>`;
+  const iv = ismInterval(d.times);
+  const isNew = d.new && Date.now() / 1000 - d.first < 600;
+  const sub = [d.model !== name ? d.model : "", d.dev_id && `ID ${d.dev_id}`, d.channel && `ch ${d.channel}`].filter(Boolean).join(" · ");
+  return `<div class="ism-dev cat-${cat}${pin ? " pin" : ""}${hid ? " hid" : ""}${isNew ? " new" : ""} ${ismStaleClass(d)}" data-key="${escHtml(key)}">` +
+    `<div class="ism-dh"><span class="ism-ico" title="${ISM_CAT[cat].label}">${ISM_CAT[cat].icon}</span>` +
+    `<div class="ism-dn"><b title="${escHtml(d.model)}">${escHtml(name)}</b><small>${escHtml(sub || " ")}</small></div>` +
+    `${isNew ? `<span class="ism-newtag" title="First heard on this PC ${ismAge(d.first)}">NEW</span>` : ""}` +
+    `<button class="ism-act${pin ? " on" : ""}" data-act="pin" title="${pin ? "Unpin" : "Pin on top"}">${pin ? "★" : "☆"}</button>` +
+    `<button class="ism-act" data-act="name" title="Give it a name (all VFOs)">✎</button>` +
+    `<button class="ism-act${hid ? " on" : ""}" data-act="hide" title="${hid ? "Show it again" : "Hide it (HIDDEN shows hidden devices)"}">⊘</button></div>` +
+    // fixed slots, so all cards are equally high: values, one line of other fields, curve (or activity), footer
+    `<div class="ism-big">${big || `<span class="ism-nobig">${escHtml(ISM_CAT[cat].label)}</span>`}</div>` +
+    `<div class="ism-more" title="${escHtml(small.map((x) => x.replace(/<[^>]*>/g, "")).join(" · "))}">${small.join("")}</div>` +
+    `<div class="ism-spark-box">${ismSpark(d.series) || ismActivity(d)}</div>` +
+    `<div class="ism-df"><span class="ism-age" data-t="${d.last}">${ismAge(d.last)}</span>` +
+    `${iv ? `<span title="Typical time between its messages">↻ ${ismDur(iv)}</span>` : ""}` +
+    `<span title="Messages since it was first heard (${ismAge(d.first)})">×${d.n}</span>` +
+    `<span title="${fmtMHz(d.freq_hz, 3)} MHz">${fmtMHz(d.freq_hz, 2)}</span>${batt}${ismBars(d.snr)}</div></div>`;
+}
+
+/** Devices passing the chips, filter and HIDDEN: pinned first, then by category and name (cards do not jump). */
+function ismDevList() {
+  const order = Object.fromEntries(ISM_CATS.map(([k], i) => [k, i]));
+  return [...ismDevs.values()]
+    .map((d) => ({ d, cat: ismCat(d.model, d.fields), name: ismName(d.key, d.model) }))
+    .filter((x) => ismPass(x.cat, x.d.key, `${x.d.model} ${x.name} ${x.d.dev_id} ${x.d.channel} ${Object.values(x.d.fields || {}).join(" ")}`))
+    .sort((a, b) => (ismIsPinned(b.d.key) - ismIsPinned(a.d.key)) || (order[a.cat] - order[b.cat])
+      || a.name.localeCompare(b.name) || String(a.d.dev_id).localeCompare(String(b.d.dev_id), undefined, { numeric: true }));
+}
+
+function renderIsmDevs() {
+  const list = ismDevList();
+  const box = $("ismDevGrid");
+  box.innerHTML = list.map((x) => ismCard(x.d)).join("");
+  $("ismDevEmpty").hidden = list.length > 0;
+  $("ismDevEmpty").textContent = ismDevs.size ? "No device passes the filter." : "No devices yet. Many sensors send only once a minute or less often.";
+  for (const k of ismFlash) {
+    const c = box.querySelector(`.ism-dev[data-key="${CSS.escape(k)}"]`);
+    if (c) c.classList.add("flash");
+  }
+}
+
+function renderIsmTimeline() {
+  // 1 h: a dot for each message; 6 h / 24 h: a block for each 5 minutes with messages, the brighter the more of them
+  const R = ismRange * 3600, now = Date.now() / 1000, t0 = now - R;
+  const list = ismDevList().filter((x) => x.d.last >= t0)
+    .sort((a, b) => (ismIsPinned(b.d.key) - ismIsPinned(a.d.key)) || (b.d.last - a.d.last));
+  let ticks = "";
+  for (let k = 6; k >= 0; k--) {
+    const ago = (k * R) / 6;
+    ticks += `<span style="left:${((6 - k) / 6) * 100}%">${!k ? "now" : ismRange === 1 ? `−${ago / 60} min` : `−${ago / 3600} h`}</span>`;
+  }
+  $("ismTlAxis").innerHTML = ticks;
+  const pc = (t) => (((t - t0) / R) * 100).toFixed(2);
+  $("ismTlRows").innerHTML = list.map(({ d, cat, name }) => {
+    const iv = ismInterval(d.times);
+    let dots;
+    if (ismRange === 1) dots = (d.times || []).filter((t) => t >= t0).map((t) => `<i style="left:${pc(t)}%"></i>`).join("");
+    else {
+      const a = (d.act || []).filter((p) => p[0] + 300 > t0), max = Math.max(1, ...a.map((p) => p[1]));
+      const w = ((300 / R) * 100).toFixed(3);
+      dots = a.map(([t, c]) => `<b style="left:${pc(Math.max(t, t0))}%;width:${w}%;opacity:${(0.3 + 0.7 * (c / max)).toFixed(2)}" title="${ismHm(t)}–${ismHm(t + 300)} UTC: ${c} message${c === 1 ? "" : "s"}"></b>`).join("");
+    }
+    return `<div class="ism-tl-row cat-${cat}" data-key="${escHtml(d.key)}">` +
+      `<span class="ism-tl-name" title="${escHtml(d.model)}${d.dev_id ? ` · ID ${escHtml(d.dev_id)}` : ""} · show its card">${ISM_CAT[cat].icon} ${escHtml(name)}${d.dev_id ? ` <small>${escHtml(d.dev_id)}</small>` : ""}</span>` +
+      `<div class="ism-tl-track">${dots}</div>` +
+      `<span class="ism-tl-int" title="Typical time between its messages">${iv ? `↻ ${ismDur(iv)}` : "–"}</span></div>`;
+  }).join("");
+  $("ismTlEmpty").hidden = list.length > 0;
+}
+
+let ismRenderTimer = null;
+function ismRenderSoon() {
+  if (ismRenderTimer) return;
+  ismRenderTimer = setTimeout(() => {
+    ismRenderTimer = null;
+    if (ismView === "devs") renderIsmDevs();
+    else if (ismView === "tl") renderIsmTimeline();
+    else if (ismView === "dev") renderIsmDevTab();
+    ismFlash.clear();
+    renderIsmCats();
+    ismStatsSoon();
+  }, 250);
+}
+
+/** A device from the server (a new message of it). */
+function ismDevUpdate(d) {
+  ismDevs.delete(d.key);
+  ismDevs.set(d.key, d);
+  ismFlash.add(d.key);
+  if (d.key === ismSel) ismDetSoon();
+  ismRenderSoon();
+}
+
+/** Messages and the views again after a change of the chips, filter, HIDDEN or names. */
+function ismApplyFilter() {
+  for (const tr of $("ismRows").rows) tr.hidden = !ismPass(tr.dataset.cat, tr.dataset.key, tr.dataset.q || "");
+  ismRenderSoon();
+}
+
+function renderIsmCats() {
+  const n = {};
+  for (const d of ismDevs.values()) { const c = ismCat(d.model, d.fields); n[c] = (n[c] || 0) + 1; }
+  const raw = $("ismRows").querySelectorAll("tr.raw").length;
+  if (raw) n.raw = raw;
+  $("ismCats").innerHTML = ISM_CATS.filter(([k]) => n[k] || ismCatsOff.has(k)).map(([k, icon, label]) =>
+    `<button class="ism-chip${ismCatsOff.has(k) ? "" : " on"}" data-cat="${k}" title="${label}: show / hide${k === "raw" ? " (RAW rows)" : " (devices)"}">${icon} ${label} <b>${n[k] || 0}</b></button>`).join("");
+}
+
+let ismStatsTimer = null;
+function ismStatsSoon() {
+  if (ismStatsTimer) return;
+  ismStatsTimer = setTimeout(() => { ismStatsTimer = null; renderIsmStats(); }, 400);
+}
+
+function renderIsmStats() {
+  const rate = ismLast.rate || [];
+  const cv = $("ismRate");
+  if (cv.offsetParent) {
+    const [ctx, w, h] = fitCanvas(cv);
+    ctx.clearRect(0, 0, w, h);
+    const max = Math.max(1, ...rate), bw = w / Math.max(rate.length, 1);
+    ctx.fillStyle = getComputedStyle(cv).color;
+    rate.forEach((v, i) => { const bh = (v / max) * (h - 2); if (v) ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 1), bh); });
+  }
+  const last = rate.length ? rate[rate.length - 1] : 0;
+  cv.title = `Messages per minute, last hour (most ${Math.max(0, ...rate)}/min)`;
+  const by = {};
+  for (const d of ismDevs.values()) by[d.model] = (by[d.model] || 0) + d.n;
+  const top = Object.entries(by).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  $("ismStatText").innerHTML = `<b>${last}</b>/min · <b>${ismDevs.size}</b> device${ismDevs.size === 1 ? "" : "s"}` +
+    (top.length ? ` · top: ${top.map(([m, c]) => `${escHtml(m)} <span class="muted">×${c}</span>`).join(", ")}` : "");
+}
+
+/** The ages on the cards each second, the timeline every 5 s, only while the ISM card is shown. */
+let ismTick = 0;
+setInterval(() => {
+  if (!$("ismCard").offsetParent) return;
+  ismTick++;
+  for (const el of document.querySelectorAll("#ismDevGrid .ism-age")) el.textContent = ismAge(Number(el.dataset.t));
+  if (ismView === "tl" && ismTick % 5 === 0) renderIsmTimeline();
+  if (ismView === "devs" && ismTick % 30 === 0) renderIsmDevs();     // stale / gone, NEW ends
+  if (ismView === "dev" && ismTick % 60 === 0) ismDetLoad();        // the time window moves on
+  if (ismTick % 60 === 0) ismStatsSoon();
+}, 1000);
+
+/** 1 h / 6 h / 24 h in the header: shown for DEVICES, TIMELINE and the device tab. */
+function renderIsmRange() {
+  $("ismRange").hidden = ismView === "msgs";
+  for (const b of $("ismRange").children) b.classList.toggle("on", Number(b.dataset.h) === ismRange);
+}
+
+function setIsmView(v) {
+  ismView = ["msgs", "devs", "tl"].includes(v) || (v === "dev" && ismSel) ? v : "msgs";
+  store("ismView", ismView);
+  for (const b of $("ismViews").children) b.classList.toggle("on", b.dataset.view === ismView);
+  $("ismMsgBox").hidden = ismView !== "msgs";
+  $("ismDevBox").hidden = ismView !== "devs";
+  $("ismTlBox").hidden = ismView !== "tl";
+  $("ismDetBox").hidden = ismView !== "dev";
+  renderIsmRange();
+  renderIsmDevTab();
+  if (ismView === "dev") { if (ismDet && ismDet.key === ismSel) renderIsmDet(); else ismDetLoad(); }
+  ismRenderSoon();
+}
+
+/** Pin, name or hide of a device (keys on its card and in its tab). */
+function ismAct(key, act) {
+  const cur = ismNames[key] || {};
+  if (act === "pin") ismSetName(key, { pin: !cur.pin });
+  else if (act === "hide") ismSetName(key, { hide: !cur.hide });
+  else if (act === "name") {
+    const d = ismDevs.get(key);
+    const name = prompt(`Name of ${d ? d.model : "the device"}${d && d.dev_id ? ` ID ${d.dev_id}` : ""} (empty = the model name):`, cur.name || "");
+    if (name !== null) ismSetName(key, { name });
+  }
+}
+
+function setIsmInfo(on) {
+  store("ismInfo", on ? "1" : "0");
+  $("ismInfoKey").classList.toggle("on", on);
+  $("ismNote").hidden = !on;
+}
+
+async function ismSetName(key, change) {
+  try {
+    const r = await fetch(vbase + "/api/ism", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "name", key, ...change }) }).then((x) => x.json());
+    if (r.names) { ismNames = r.names; ismRefreshNames(); }
+  } catch { /* the server is gone */ }
+}
+
+/** Names changed (here or on another VFO): the message rows show them too. */
+function ismRefreshNames() {
+  for (const tr of $("ismRows").rows) {
+    const k = tr.dataset.key;
+    if (!k) continue;
+    const d = ismDevs.get(k);
+    const dev = tr.querySelector("td.dev");
+    if (d && dev) {
+      const name = ismName(k, d.model);
+      dev.innerHTML = `<span class="ism-ico">${ISM_CAT[tr.dataset.cat].icon}</span>${escHtml(name)}${name !== d.model ? ` <small>${escHtml(d.model)}</small>` : ""}`;
+      tr.dataset.q = `${name} ${tr.dataset.q0 || ""}`;
+    }
+  }
+  if (ismView === "dev") renderIsmDet();
+  ismApplyFilter();
+}
+
+// ----- ISM: the tab of one device (a click on its card): its values over 1 h / 6 h / 24 h as charts -----
+
+let ismSel = recall("ismSel") || "";             // device key of the device tab
+let ismDet = null;                               // that device with its history from /api/ism?dev=
+let ismDetTimer = null;
+// field -> [title, unit, decimals, colour]: only these are charts. Other numbers of a device (switch or button IDs,
+// codes, rolling counters, flags…) are no measurements and stay as values in the head of its tab.
+const ISM_FIELD = {
+  temperature_C: ["Temperature", "°C", 1, "#ffcf6b"], humidity: ["Humidity", "%", 0, "#6fc3ff"],
+  moisture: ["Moisture", "%", 0, "#6fc3ff"], pressure_hPa: ["Pressure", "hPa", 1, "#9be37b"],
+  pressure_kPa: ["Tyre pressure", "kPa", 1, "#6db3ff"], pressure_PSI: ["Tyre pressure", "PSI", 1, "#6db3ff"],
+  wind_avg_km_h: ["Wind", "km/h", 1, "#cc66ff"], wind_avg_m_s: ["Wind", "m/s", 1, "#cc66ff"],
+  wind_dir_deg: ["Wind direction", "°", 0, "#cc66ff"], rain_mm: ["Rain (total)", "mm", 1, "#4fd6c8"],
+  rain_rate_mm_h: ["Rain rate", "mm/h", 1, "#4fd6c8"], uv: ["UV index", "", 1, "#e45cff"],
+  light_lux: ["Light", "lux", 0, "#ffe066"], power_W: ["Power", "W", 0, "#ffe066"],
+  energy_kWh: ["Energy", "kWh", 2, "#ffb547"], battery_mV: ["Battery", "mV", 0, "#3cf07c"],
+};
+const ISM_GUST = { wind_avg_km_h: "wind_max_km_h", wind_avg_m_s: "wind_max_m_s" };   // drawn into the wind chart
+
+function ismOpenDev(key) {
+  ismSel = key;
+  store("ismSel", key);
+  ismDet = null;
+  $("ismDetCharts").innerHTML = "";
+  setIsmView("dev");
+  ismDetLoad();
+}
+
+function ismCloseDev() {
+  ismSel = "";
+  store("ismSel", "");
+  ismDet = null;
+  setIsmView("devs");
+}
+
+async function ismDetLoad() {
+  const key = ismSel, v = active;
+  if (!key) return;
+  try {
+    const r = await fetch(`${vbase}/api/ism?dev=${encodeURIComponent(key)}`);
+    if (v !== active || key !== ismSel) return;
+    if (!r.ok) { ismDet = null; renderIsmDet(); return; }
+    ismDet = await r.json();
+    renderIsmDet();
+  } catch { /* the server is gone */ }
+}
+
+/** A new message of the open device: its history again (at most every 2 s). */
+function ismDetSoon() {
+  if (ismDetTimer) return;
+  ismDetTimer = setTimeout(() => { ismDetTimer = null; if (ismView === "dev") ismDetLoad(); }, 2000);
+}
+
+function renderIsmDevTab() {
+  const b = $("ismDevTab");
+  const d = ismDevs.get(ismSel) || ismDet;
+  b.hidden = !ismSel;
+  if (!ismSel) return;
+  const cat = d ? ismCat(d.model, d.fields) : "other";
+  b.innerHTML = `${ISM_CAT[cat].icon} ${escHtml(d ? ismName(ismSel, d.model) : ismSel.split("|")[0])} <span class="ism-tab-x" title="Close the device tab">✕</span>`;
+}
+
+const ismHm = (t) => new Date(t * 1000).toISOString().slice(11, 16);
+
+// Charts of the device tab: uPlot (static/uplot, loaded with the first device tab). All charts share the time axis:
+// one cursor for all, dragging over a chart zooms all of them in, a double click goes back to the whole 1 / 6 / 24 h.
+let ismPlots = [];            // {u, spec, stat (element)}
+let ismPlotSig = "";          // the charts shown (fields + range): the same ones only get new data, the zoom stays
+let ismZoom = null;           // [min, max] zoomed in, null = the whole time window
+let ismScaleBusy = false;     // set while the page itself moves the time axes
+const ismUplot = () => Promise.all([satAsset("/static/uplot/uPlot.min.css"), satAsset("/static/uplot/uPlot.iife.min.js")]);
+const ismWin = () => { const t1 = Date.now() / 1000; return [t1 - ismRange * 3600, t1]; };
+
+function ismPlotWidth() {
+  const w = $("ismDetCharts").clientWidth;
+  return Math.max(260, (w >= 760 ? Math.floor((w - 10) / 2) : w) - 2);
+}
+
+/** All charts to one time range (except `from`, which is there already). */
+function ismSetX(min, max, from) {
+  ismScaleBusy = true;
+  try { for (const p of ismPlots) if (p.u !== from) p.u.setScale("x", { min, max }); } finally { ismScaleBusy = false; }
+}
+
+/** Chart descriptions of a device from its history: fields, signal, messages per interval; data aligned for uPlot. */
+function ismChartSpecs(hist, iv, cat) {
+  const all = new Set();
+  for (const h of hist) for (const k of Object.keys(h[4])) all.add(k);
+  // known measurements only, in their order; a device of the category Other gets no field charts at all
+  const keys = cat === "other" ? [] : Object.keys(ISM_FIELD).filter((k) => all.has(k));
+  // one x for the curves: the minutes with messages, and a null row in each longer silence (no line across it)
+  const gap = Math.max(600, (iv || 60) * 4), rows = [];
+  for (const h of hist) {
+    const t = h[0] + 30;
+    if (rows.length && t - rows[rows.length - 1].t > gap) rows.push({ t: rows[rows.length - 1].t + gap / 2, h: null });
+    rows.push({ t, h });
+  }
+  const x = rows.map((r) => r.t);
+  const col = (get) => rows.map((r) => (r.h && typeof get(r.h) === "number" ? get(r.h) : null));
+  const specs = [];
+  for (const k of keys) {
+    const [title, unit, dec, color] = ISM_FIELD[k];
+    const series = [{ label: title, color, data: col((h) => h[4][k]) }];
+    if (ISM_GUST[k] && all.has(ISM_GUST[k])) {
+      series[0].label = "average";
+      series.push({ label: "gust", color: "#e8b8ff", dash: true, data: col((h) => h[4][ISM_GUST[k]]) });
+    }
+    specs.push({ id: k, title, unit, dec, series, x, dots: k === "wind_dir_deg", zero: /rain|power|energy|light|uv/.test(k) });
+  }
+  if (hist.some((h) => h[2] != null)) {
+    specs.push({ id: "signal", title: "Signal", unit: "dB", dec: 1, x,
+      series: [{ label: "RSSI", color: "#3cf07c", data: col((h) => h[2]) }, { label: "SNR", color: "#8d97a5", dash: true, data: col((h) => h[3]) }] });
+  }
+  const barS = ismRange <= 1 ? 60 : ismRange <= 6 ? 300 : 900;   // messages per 1 / 5 / 15 min
+  const cnt = new Map();
+  for (const h of hist) { const b = Math.floor(h[0] / barS) * barS + barS / 2; cnt.set(b, (cnt.get(b) || 0) + h[1]); }
+  const acc = getComputedStyle($("ismCard")).getPropertyValue("--yellow").trim() || "#ffd84a";
+  specs.push({ id: "msgs", title: `Messages per ${barS / 60} min`, unit: "", dec: 0, bars: true, x: [...cnt.keys()],
+    series: [{ label: "messages", color: acc, data: [...cnt.values()] }] });
+  return specs;
+}
+
+/** Latest value, min, average and max of the first series (header of a chart). */
+function ismStatText(s) {
+  const v = s.series[0].data.filter((x) => x != null);
+  if (!v.length) return "";
+  if (s.bars) return `${v.reduce((a, b) => a + b, 0)} in ${ismRange} h`;
+  const f = (x) => x.toFixed(s.dec), last = v[v.length - 1];
+  if (s.dots) return `${f(last)}°`;
+  return `<b style="color:${s.series[0].color}">${f(last)}</b> ${escHtml(s.unit)} · min ${f(Math.min(...v))} · avg ${f(v.reduce((a, b) => a + b, 0) / v.length)} · max ${f(Math.max(...v))}`;
+}
+
+function ismPlotOpts(s) {
+  const axis = { stroke: "#8d97a5", grid: { stroke: "rgba(255,255,255,.07)", width: 1 }, ticks: { stroke: "rgba(255,255,255,.12)", width: 1, size: 4 },
+    font: "10px ui-monospace, Consolas, monospace" };
+  const fmt = (v) => (v == null ? "–" : `${v.toFixed(s.dec)}${s.unit && !s.bars ? ` ${s.unit}` : ""}`);
+  const y = s.dots ? { range: [0, 360] }
+    : s.zero || s.bars ? { range: (u, mn, mx) => { const lo = Math.min(0, mn ?? 0), hi = Math.max(mx ?? 1, lo + 1); return [lo, hi + (hi - lo) * 0.08]; } }
+      : {};
+  return {
+    width: ismPlotWidth(), height: 160,
+    tzDate: (ts) => uPlot.tzDate(new Date(ts * 1e3), "Etc/UTC"),
+    cursor: {
+      sync: { key: "ism" }, drag: { x: true, y: false },
+      bind: { dblclick: () => () => { ismZoom = null; const [a, b] = ismWin(); ismSetX(a, b, null); return null; } },
+    },
+    scales: { x: { time: true }, y },
+    axes: [{ ...axis, size: 24, values: (u, v) => v.map((t) => (t == null ? "" : ismHm(t))) }, { ...axis, size: 46, ...(s.dots ? { splits: () => [0, 90, 180, 270, 360], values: (u, v) => v.map((d) => ["N", "E", "S", "W", "N"][d / 90]) } : {}) }],
+    series: [{ value: (u, v) => (v == null ? "–" : `${ismHm(v)} UTC`) },
+      ...s.series.map((x, i) => ({
+        label: x.label, stroke: x.color, width: 1.6, dash: x.dash ? [4, 3] : undefined, value: (u, v) => fmt(v),
+        fill: i === 0 && !s.dots && x.color.startsWith("#") ? `${x.color}${s.bars ? "cc" : "1c"}` : undefined,
+        paths: s.bars ? uPlot.paths.bars({ size: [0.85, 40] }) : s.dots ? () => null : undefined,
+        points: s.dots ? { show: true, size: 4, fill: x.color, stroke: x.color } : { show: false },
+      }))],
+    legend: { live: true },
+    hooks: {
+      setScale: [(u, key) => {
+        if (key !== "x" || ismScaleBusy) return;            // the user dragged: all charts follow
+        const { min, max } = u.scales.x, [a, b] = ismWin();
+        ismZoom = min - a > 60 || b - max > 60 ? [min, max] : null;
+        ismSetX(min, max, u);
+      }],
+    },
+  };
+}
+
+/** Charts of the open device: new charts when the fields or the range change, else only new data. */
+async function renderIsmCharts(d, iv) {
+  const box = $("ismDetCharts");
+  const [t0, t1] = ismWin();
+  const hist = (d.hist || []).filter((h) => h[0] >= t0 - 60);
+  if (!hist.length) {
+    for (const p of ismPlots) p.u.destroy();
+    ismPlots = [];
+    ismPlotSig = "";
+    box.innerHTML = `<div class="ft8-empty">No message in the last ${ismRange} h.</div>`;
+    return;
+  }
+  try { await ismUplot(); } catch (e) { box.innerHTML = `<div class="ft8-empty">${escHtml(e.message)}</div>`; return; }
+  if (ismDet !== d) return;                                  // another device or newer data in the meantime
+  const live = ismDevs.get(d.key) || d;
+  const specs = ismChartSpecs(hist, iv, ismCat(live.model, live.fields));
+  const sig = `${d.key}|${ismRange}|${specs.map((s) => s.id).join(",")}`;
+  const data = (s) => [s.x, ...s.series.map((x) => x.data)];
+  ismScaleBusy = true;
+  try {
+    if (sig === ismPlotSig && ismPlots.length === specs.length) {
+      specs.forEach((s, i) => { ismPlots[i].u.setData(data(s), true); ismPlots[i].stat.innerHTML = ismStatText(s); });
+    } else {
+      for (const p of ismPlots) p.u.destroy();
+      ismPlots = [];
+      ismZoom = null;
+      box.innerHTML = "";
+      for (const s of specs) {
+        const el = document.createElement("div");
+        el.className = "ism-chart";
+        el.innerHTML = `<div class="ism-ch-head"><b>${escHtml(s.title)}</b>${s.unit && !s.bars ? ` <span class="muted">${escHtml(s.unit)}</span>` : ""}<span class="ism-ch-stat"></span></div>`;
+        box.append(el);
+        const stat = el.querySelector(".ism-ch-stat");
+        stat.innerHTML = ismStatText(s);
+        ismPlots.push({ u: new uPlot(ismPlotOpts(s), data(s), el), spec: s, stat });
+      }
+      ismPlotSig = sig;
+    }
+  } finally { ismScaleBusy = false; }
+  const [a, b] = ismZoom || [t0, t1];
+  ismSetX(a, b, null);
+}
+
+function renderIsmDet() {
+  renderIsmDevTab();
+  const head = $("ismDetHead"), charts = $("ismDetCharts");
+  const d = ismDet;
+  if (!d) {
+    head.innerHTML = `<div class="ft8-empty">${ismSel && ismDevs.size ? "This device is not in the list of the receiver any more (CLR, a restart, or 300 newer devices)." : "Loading…"}</div>`;
+    for (const p of ismPlots) p.u.destroy();
+    ismPlots = [];
+    ismPlotSig = "";
+    charts.innerHTML = "";
+    return;
+  }
+  const live = ismDevs.get(d.key) || d;
+  const f = live.fields || {}, cat = ismCat(live.model, f), name = ismName(d.key, live.model), iv = ismInterval(live.times);
+  const pin = ismIsPinned(d.key), hid = ismIsHidden(d.key);
+  const big = ISM_BIG.filter(([k]) => f[k] != null).map(([k, u, dec, cls]) => `<span class="v ${cls}">${Number(f[k]).toFixed(dec)}<u>${u}</u></span>`).join("");
+  const info = [
+    ["Model", `${escHtml(live.model)}${live.protocol ? ` <span class="muted">(rtl_433 protocol ${escHtml(live.protocol)})</span>` : ""}`],
+    ["ID / channel", `${escHtml(live.dev_id || "–")} / ${escHtml(live.channel || "–")}`],
+    ["Frequency", `${fmtMHz(live.freq_hz, 3)} MHz · ${escHtml(live.mod || "")}`],
+    ["Signal", `${ismBars(live.snr)} ${live.rssi == null ? "–" : `${Number(live.rssi).toFixed(1)} dB · SNR ${Number(live.snr).toFixed(1)} dB`}`],
+    ["Heard", `${ismAge(live.last)} · first ${ismAge(live.first)} · ×${live.n}${iv ? ` · ↻ ${ismDur(iv)}` : ""}`],
+    ["Check", live.mic ? `<span class="ism-mic">✓</span>${escHtml(live.mic)}` : "–"],
+    ["Battery", f.battery_ok == null ? "–" : `<span class="ism-batt ${f.battery_ok ? "ok" : "low"}"></span> ${f.battery_ok ? "OK" : "LOW"}`],
+    ...(() => {   // fields without a chart (IDs, codes, counters…): their latest values
+      const other = Object.entries(f).filter(([k]) => k !== "battery_ok"
+        && (cat === "other" || (!(k in ISM_FIELD) && !Object.values(ISM_GUST).includes(k))));
+      return other.length ? [["Values", other.map(([k, v]) => `${escHtml(k)}=<b>${escHtml(v)}</b>`).join(" · ")]] : [];
+    })(),
+  ];
+  head.innerHTML = `<div class="ism-det-id cat-${cat}"><span class="ism-det-ico">${ISM_CAT[cat].icon}</span><div><b>${escHtml(name)}</b>` +
+    `<small>${ISM_CAT[cat].label}${name !== live.model ? ` · ${escHtml(live.model)}` : ""}</small></div>` +
+    `<button class="ism-act${pin ? " on" : ""}" data-act="pin" title="${pin ? "Unpin" : "Pin on top"}">${pin ? "★" : "☆"}</button>` +
+    `<button class="ism-act" data-act="name" title="Give it a name (all VFOs)">✎</button>` +
+    `<button class="ism-act${hid ? " on" : ""}" data-act="hide" title="${hid ? "Show it again" : "Hide it"}">⊘</button></div>` +
+    (big ? `<div class="ism-big">${big}</div>` : "") +
+    `<dl class="ism-det-info">${info.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`;
+  renderIsmCharts(d, iv);
+}
+
+$("ismRange").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-h]");
+  if (!b) return;
+  ismRange = Number(b.dataset.h);
+  store("ismRange", String(ismRange));
+  renderIsmRange();
+  if (ismView === "dev") renderIsmDet();
+  else if (ismView === "devs") renderIsmDevs();
+  else if (ismView === "tl") renderIsmTimeline();
+});
+$("ismDetHead").addEventListener("click", (e) => { const b = e.target.closest("[data-act]"); if (b && ismSel) ismAct(ismSel, b.dataset.act); });
+new ResizeObserver(() => { const w = ismPlotWidth(); for (const p of ismPlots) if (p.u.width !== w) p.u.setSize({ width: w, height: 160 }); }).observe($("ismDetCharts"));
+
+$("ismViews").addEventListener("click", (e) => { const b = e.target.closest("button[data-view]"); if (b) setIsmView(b.dataset.view); });
+$("ismInfoKey").addEventListener("click", () => setIsmInfo($("ismNote").hidden));
+setIsmInfo(recall("ismInfo") === "1");
+$("ismCats").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-cat]");
+  if (!b) return;
+  const c = b.dataset.cat;
+  if (ismCatsOff.has(c)) ismCatsOff.delete(c); else ismCatsOff.add(c);
+  store("ismCatsOff", JSON.stringify([...ismCatsOff]));
+  ismApplyFilter();
+});
+$("ismFilter").addEventListener("input", ismApplyFilter);
+$("ismHidden").addEventListener("change", (e) => { ismShowHidden = e.target.checked; ismApplyFilter(); });
+$("ismDevGrid").addEventListener("click", (e) => {
+  const card = e.target.closest(".ism-dev");
+  if (!card) return;
+  const b = e.target.closest("[data-act]");
+  if (b) ismAct(card.dataset.key, b.dataset.act);
+  else ismOpenDev(card.dataset.key);                     // the card itself: the tab of the device with its charts
+});
+$("ismDevTab").addEventListener("click", (e) => { if (e.target.closest(".ism-tab-x")) { e.stopPropagation(); ismCloseDev(); } }, true);
+$("ismTlRows").addEventListener("click", (e) => {
+  const r = e.target.closest(".ism-tl-name");
+  if (!r) return;
+  ismOpenDev(r.parentElement.dataset.key);
+});
+setTimeout(() => setIsmView(ismView));
+
 
 // ---------- HFDL: aircraft data link on HF (dumphfdl; all HFDL channels inside the received band) ----------
 
@@ -8442,39 +9154,404 @@ function renderLogs(logs) {
 
 // ---------- RTTY ----------
 
-const rttyOut = textOut("rttyText", "rttyEmpty", 12000);
+/** RTTY terminal: the characters come out one by one at the speed of the signal (teletype) before a blinking cursor,
+ *  unsure ones (recent framing errors) dim amber, the UTC time in the left margin at each new line and after a pause.
+ *  The text loaded from the server (VFO switch, reload) is put in at once and without times. */
+const RTTY_MAX = 12000, RTTY_PAUSE_MS = 6000;
+let rttyBaudNow = 45.45;
+const rttyOut = (() => {
+  const box = $("rttyText"), empty = $("rttyEmpty");
+  const cur = document.createElement("span");
+  cur.className = "rt-cur";
+  cur.textContent = "█";
+  cur.hidden = true;
+  box.append(cur);
+  let queue = [], node = null, nodeLo = null, lineStart = true, lineEmpty = true, last = 0, count = 0, credit = 0;
+  const utc = () => new Date().toISOString().slice(11, 19);
+
+  function put(ch, lo, live) {
+    if (live && !lineEmpty && ch !== "\n" && Date.now() - last > RTTY_PAUSE_MS) put("\n", lo, false);   // after a pause: new line
+    if (ch !== "\n" && lineStart) {
+      lineStart = false;
+      if (live) {
+        const t = document.createElement("span");
+        t.className = "rt-ts";
+        t.textContent = utc();
+        box.insertBefore(t, cur);
+        node = null;
+      }
+    }
+    if (!node || nodeLo !== lo) {
+      const sp = document.createElement("span");
+      if (lo) sp.className = "rt-lo";
+      node = document.createTextNode("");
+      sp.append(node);
+      box.insertBefore(sp, cur);
+      nodeLo = lo;
+    }
+    node.appendData(ch);
+    if (ch === "\n") { lineStart = true; lineEmpty = true; } else lineEmpty = false;
+    if (live) last = Date.now();
+    if (++count > RTTY_MAX + 2000) trim();
+  }
+
+  // the oldest spans go so the page does not slow down during long listening
+  function trim() {
+    while (count > RTTY_MAX) {
+      const el = empty.nextSibling;
+      if (!el || el === cur) break;
+      if (!el.classList.contains("rt-ts")) count -= el.textContent.length;
+      if (el.firstChild === node) node = null;
+      el.remove();
+    }
+  }
+
+  function write(fn) {
+    const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 4;
+    empty.hidden = true;
+    fn();
+    if (stick) box.scrollTop = box.scrollHeight;
+  }
+
+  // teletype: 7.5 bits per character; a long queue (fast burst, a page in the background) is caught up at once
+  setInterval(() => {
+    if (!queue.length) { credit = 0; return; }
+    credit += 40 / (7500 / rttyBaudNow);
+    let n = Math.floor(credit);
+    if (queue.length > 30) n = queue.length - 10;
+    if (!n) return;
+    credit -= Math.min(credit, n);
+    write(() => { for (const [ch, lo] of queue.splice(0, n)) put(ch, lo, true); });
+  }, 40);
+
+  return {
+    add(t, q, instant = false) {
+      if (!t) return;
+      if (instant) { write(() => { for (let i = 0; i < t.length; i++) put(t[i], !!q && q[i] === "0", false); }); return; }
+      for (let i = 0; i < t.length; i++) queue.push([t[i], !!q && q[i] === "0"]);
+    },
+    clear() {
+      queue = [];
+      while (empty.nextSibling && empty.nextSibling !== cur) empty.nextSibling.remove();
+      node = null; lineStart = true; lineEmpty = true; count = 0;
+      empty.hidden = false;
+    },
+    cursor(on) { cur.hidden = !on; },
+  };
+})();
 
 function rttyPost(body) {
   return fetch(vbase + "/api/rtty", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
     .then((r) => r.json());
 }
 
+function rttyFigs(figs) {
+  $("rtFigs").textContent = figs ? "FIGS" : "LTRS";
+  $("rtFigs").classList.toggle("figs", !!figs);
+}
+
+const RTTY_SNR_SEGS = 10;   // 3 dB each
+$("rtSnr").innerHTML = "<i></i>".repeat(RTTY_SNR_SEGS);
+
 function renderRttyInfo(i) {
   const o = i.opts || {};
   $("rttyShift").value = String(o.shift ?? "auto");
   $("rttyBaud").value = String(o.baud ?? "auto");
   $("rttyPol").value = o.polarity || "auto";
-  if (i.shift_hz == null) {
-    $("rttyInfo").textContent = "searching…";
-    $("rttyInfo").title = "looking for two FSK tones in the passband";
-    return;
-  }
-  // Short "● 45.45 Bd 170 Hz N 12 dB", tones in the tooltip.
-  const pol = i.polarity === "reverse" ? "R" : "N";
-  $("rttyInfo").textContent = `${i.present ? "●" : "○"} ${i.baud} Bd  ${i.shift_hz} Hz  ${pol}  ${Math.round(i.snr_db)} dB`;
-  $("rttyInfo").title = `mark ${fmtKHz(i.mark_hz, 2)} kHz · space ${fmtKHz(i.space_hz, 2)} kHz · ${i.polarity}`
-    + (i.std_shift ? ` · standard shift ${i.std_shift} Hz` : "");
+  rttyBaudNow = i.baud || 45.45;
+  rttyOut.cursor(!!i.enabled);
+  const lock = i.shift_hz != null;
+  const bd = $("rttyBadges");
+  bd.classList.toggle("lock", lock && !!i.present);
+  bd.classList.toggle("search", !!i.enabled && !lock);
+  $("rtBaud").textContent = lock ? `${i.baud} Bd` : "— Bd";
+  $("rtShift").textContent = lock ? `${i.shift_hz} Hz` : "— Hz";
+  $("rtPol").textContent = i.polarity === "reverse" ? "REV" : "NORM";
+  rttyFigs(i.figs);
+  const sy = $("rtSync");
+  sy.hidden = !(lock && (i.sync || i.probing));
+  sy.classList.toggle("probe", !!i.probing);
+  sy.textContent = i.sync ? "NO BAUDOT" : "CHECKING Bd";
+  sy.title = i.sync
+    ? `A strong FSK signal whose characters keep failing the start / stop check (correct frames ${Math.round((i.frames_ok || 0) * 100)} %): `
+      + "synchronous or encrypted data, not Baudot text. Its text is not written; it comes back by itself when the frames fit again."
+    : "Too many framing errors: trying the other speeds before deciding whether this is Baudot at all";
+  bd.title = !i.enabled ? "decoder off" : !lock ? "searching: looking for two FSK tones in the passband"
+    : `mark ${fmtKHz(i.mark_hz, 2)} kHz · space ${fmtKHz(i.space_hz, 2)} kHz · ${i.polarity}`
+      + (i.std_shift ? ` · standard shift ${i.std_shift} Hz` : "");
+  const n = lock && i.present ? Math.max(0, Math.min(RTTY_SNR_SEGS, Math.round(i.snr_db / 3))) : 0;
+  [...$("rtSnr").children].forEach((el, k) => { el.className = k < n ? (k < 3 ? "on r" : k < 6 ? "on y" : "on") : ""; });
+  $("rtSnr").title = lock ? `SNR of the weaker tone ${Math.round(i.snr_db)} dB` : "SNR";
+  $("rttyStation").textContent = i.station || "";
+  $("rttyStation").title = i.station ? "Known RTTY transmission at this frequency" : "";
+  $("rttyAuto").hidden = i.focus_hz == null;
 }
+
+// known transmissions (from GET /api/rtty): choosing one tunes USB so that the signal is in the passband,
+// a single station in its middle, an amateur segment from its start
+let rttyStations = [];
+function renderRttyStations(list) {
+  if (!list || JSON.stringify(list) === JSON.stringify(rttyStations)) return;
+  rttyStations = list;
+  const sel = $("rttyGo");
+  sel.length = 1;
+  const groups = new Map();
+  list.forEach((s, k) => {
+    if (!groups.has(s.group)) {
+      const og = document.createElement("optgroup");
+      og.label = s.group;
+      groups.set(s.group, og);
+      sel.append(og);
+    }
+    const o = document.createElement("option");
+    o.value = String(k);
+    o.textContent = s.kind === "segment" ? `${s.name} (from ${fmtKHz(s.hz, 1)} kHz)` : s.name;
+    groups.get(s.group).append(o);
+  });
+}
+
+$("rttyGo").addEventListener("change", () => {
+  const s = rttyStations[Number($("rttyGo").value)];
+  $("rttyGo").value = "";
+  if (!s || !st) return;
+  const usb = st.mode !== "USB";   // like CW TUNE: the mode locally first, the frequency, then the mode to the server
+  if (usb) { st.mode = "USB"; renderControls(); }
+  const bw = (st.bandwidth && st.bandwidth.USB) || 3000;
+  tune(s.kind === "segment" ? s.hz : s.hz - Math.min(1500, bw / 2));
+  if (usb) send({ mode: "USB" });
+  if (!st.rtty) { $("rttyOn").checked = true; $("rttyOn").dispatchEvent(new Event("change")); }
+});
 
 $("rttyOn").addEventListener("change", () => {
   st.rtty = $("rttyOn").checked;
   $("rttyCard").hidden = !st.rtty;
   send({ rtty: st.rtty });
+  setTimeout(rttyAsk, 500);
 });
 $("rttyClear").addEventListener("click", () => { rttyPost({ action: "clear" }); rttyOut.clear(); });
 for (const [id, key] of [["rttyShift", "shift"], ["rttyBaud", "baud"], ["rttyPol", "polarity"]]) {
   $(id).addEventListener("change", () => rttyPost({ opts: { [key]: $(id).value } }).then(renderRttyInfo));
 }
+
+// ----- RTTY tuning indicators (CROSS / WF / BARS / EYE): the server sends their data only while the page asks (every 2 s)
+const RTTY_VIEWS = ["cross", "wf", "bars", "eye"];
+let rttyView = RTTY_VIEWS.includes(recall("rttyView")) ? recall("rttyView") : "cross";
+let rttyVizAt = 0, rttyWf = null, rttyErr = 0, rttyLast = null;
+const rttyShown = () => !MAP_ONLY && bodyTab === "dec" && decPage === "rtty" && !!(st && st.rtty);
+const b64u8 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+function rttyAsk() {
+  if (rttyShown()) rttyPost({ action: "viz" }).catch(() => { /* receiver restarting */ });
+}
+
+function rttyCanvas() {
+  const cv = $("rttyScope"), w = cv.clientWidth, h = cv.clientHeight, dpr = window.devicePixelRatio || 1;
+  if (!w || !h) return null;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.globalCompositeOperation = "source-over";
+  return { g, w, h };
+}
+
+function rttyScopeClear(note) {
+  const c = rttyCanvas();
+  if (c) { c.g.fillStyle = "#010402"; c.g.fillRect(0, 0, c.w, c.h); }
+  $("rttyIndInfo").textContent = note;
+}
+
+function setRttyView(v) {
+  rttyView = v;
+  store("rttyView", v);
+  for (const b of $("rttyView").children) b.classList.toggle("on", b.dataset.view === v);
+  $("rttyScope").classList.toggle("wf", v === "wf");
+  rttyWf = null;
+  rttyScopeClear(rttyShown() ? "waiting for data…" : "decoder off");
+  rttyAsk();
+}
+
+// phosphor persistence: the old picture fades, the new traces add up
+function rttyFade(c, a) {
+  c.g.globalCompositeOperation = "source-over";
+  c.g.fillStyle = `rgba(1, 4, 2, ${a})`;
+  c.g.fillRect(0, 0, c.w, c.h);
+}
+
+function rttyGrid(c, cross) {
+  const { g, w, h } = c;
+  g.strokeStyle = "rgba(57, 255, 106, .12)";
+  g.lineWidth = 1;
+  g.setLineDash([3, 4]);
+  g.beginPath();
+  if (cross) { g.moveTo(w / 2, 6); g.lineTo(w / 2, h - 6); }
+  g.moveTo(6, h / 2); g.lineTo(w - 6, h / 2);
+  g.stroke();
+  g.setLineDash([]);
+}
+
+function drawRttyCross(c, d) {
+  const { g, w, h } = c;
+  rttyFade(c, 0.28);
+  rttyGrid(c, true);
+  if (!d.m) return;
+  const m = b64u8(d.m), s = b64u8(d.s), R = Math.min(w, h) * 0.44;
+  g.globalCompositeOperation = "lighter";
+  g.strokeStyle = "rgba(57, 255, 106, .10)";
+  g.lineWidth = 1.4;
+  for (let i = 0; i < m.length; i++) {
+    g.beginPath();
+    g.ellipse(w / 2, h / 2, Math.max(0.5, (m[i] / 255) * R), Math.max(0.5, (s[i] / 255) * R), 0, 0, 2 * Math.PI);
+    g.stroke();
+  }
+  g.globalCompositeOperation = "source-over";
+  g.fillStyle = "rgba(57, 255, 106, .45)";
+  g.font = "10px ui-monospace, Consolas, monospace";
+  g.fillText("M", w - 14, h / 2 - 5);
+  g.fillText("S", w / 2 + 5, 14);
+}
+
+function drawRttyEye(c, d) {
+  const { g, w, h } = c;
+  rttyFade(c, 0.22);
+  rttyGrid(c, true);
+  if (!d.eye) return;
+  const n = d.eye.n, raw = b64u8(d.eye.data), cnt = Math.floor(raw.length / n), mid = h / 2, sp = h * 0.4;
+  g.globalCompositeOperation = "lighter";
+  g.strokeStyle = "rgba(57, 255, 106, .14)";
+  g.lineWidth = 1.3;
+  for (let t = 0; t < cnt; t++) {
+    g.beginPath();
+    for (let k = 0; k < n; k++) {
+      const v = ((raw[t * n + k] << 24) >> 24) / 127;
+      const x = 6 + (k / (n - 1)) * (w - 12), y = mid - v * sp;
+      if (k) g.lineTo(x, y); else g.moveTo(x, y);
+    }
+    g.stroke();
+  }
+  g.globalCompositeOperation = "source-over";
+  g.fillStyle = "rgba(57, 255, 106, .45)";
+  g.font = "10px ui-monospace, Consolas, monospace";
+  g.fillText("MARK", 6, 12);
+  g.fillText("SPACE", 6, h - 5);
+}
+
+function drawRttyWf(c, d) {
+  const { g, w, h } = c;
+  if (!d.spec) { rttyScopeClear("no signal data"); return; }
+  const row = b64u8(d.spec.data), nb = row.length, ROWS = 160, key = `${nb}:${d.spec.lo}:${d.spec.hi}`;
+  if (!rttyWf || rttyWf.key !== key) {
+    const off = document.createElement("canvas");
+    off.width = nb; off.height = ROWS;
+    const og = off.getContext("2d");
+    og.fillStyle = "#010402"; og.fillRect(0, 0, nb, ROWS);
+    rttyWf = { key, off, og, lo: d.spec.lo, hi: d.spec.hi };
+  }
+  const { off, og, lo, hi } = rttyWf;
+  og.drawImage(off, 0, 0, nb, ROWS - 1, 0, 1, nb, ROWS - 1);   // older rows down
+  const img = og.createImageData(nb, 1);
+  for (let i = 0; i < nb; i++) {
+    const v = row[i] / 255, a = Math.pow(v, 1.4);
+    img.data[i * 4] = Math.max(0, v - 0.75) * 4 * 255;
+    img.data[i * 4 + 1] = 20 + a * 235;
+    img.data[i * 4 + 2] = Math.max(0, v - 0.6) * 2.5 * 160 + 8;
+    img.data[i * 4 + 3] = 255;
+  }
+  og.putImageData(img, 0, 0);
+  g.imageSmoothingEnabled = true;
+  g.drawImage(off, 0, 0, w, h);
+  const X = (f) => ((f - lo) / (hi - lo)) * w;
+  g.font = "bold 10px ui-monospace, Consolas, monospace";
+  if (d.focus != null && d.focus >= lo && d.focus <= hi) {
+    g.fillStyle = "#5fd7ff";
+    const x = X(d.focus);
+    g.beginPath(); g.moveTo(x - 5, h); g.lineTo(x + 5, h); g.lineTo(x, h - 8); g.fill();
+  }
+  for (const [f, lab, col] of [[d.fm, "M", "#ffd84a"], [d.fs, "S", "#ffb547"]]) {
+    if (f == null) continue;
+    const x = X(f);
+    g.strokeStyle = col;
+    g.setLineDash([4, 3]);
+    g.beginPath(); g.moveTo(x, 14); g.lineTo(x, h); g.stroke();
+    g.setLineDash([]);
+    g.fillStyle = col;
+    g.fillText(lab, x - 3, 11);
+  }
+}
+
+function drawRttyBars(c, d) {
+  const { g, w, h } = c;
+  g.fillStyle = "#010402";
+  g.fillRect(0, 0, w, h);
+  const SEG = 16, top = 18, bot = h - 18, sh = (bot - top) / SEG, bw = 22;
+  g.font = "bold 10px ui-monospace, Consolas, monospace";
+  // LED columns: mark left, space right, 2.5 dB per segment (0–40 dB above the noise)
+  for (const [lv, x, lab] of [[d.lm, 10, "M"], [d.ls, w - 10 - bw, "S"]]) {
+    const on = d.lock ? Math.round(Math.max(0, lv || 0) / 2.5) : 0;
+    for (let k = 0; k < SEG; k++) {
+      const y = bot - (k + 1) * sh + 1, lit = k < on;
+      g.fillStyle = !lit ? "#0c1a10" : k >= 12 ? "#ffb547" : k >= 8 ? "#ffd84a" : "#3cf07c";
+      g.fillRect(x, y, bw, sh - 2);
+    }
+    g.fillStyle = "rgba(57, 255, 106, .6)";
+    g.fillText(lab, x + bw / 2 - 3, h - 5);
+  }
+  // tuning meter: arc ±50 Hz, needle smoothed
+  rttyErr = d.lock ? rttyErr * 0.6 + 0.4 * (d.err || 0) : rttyErr * 0.8;
+  const cx = w / 2, cy = h * 0.72, R = Math.min(w - 2 * (bw + 30), h * 1.1) / 2, A = (Math.PI * 5) / 12;
+  g.strokeStyle = "rgba(57, 255, 106, .35)";
+  g.lineWidth = 2;
+  g.beginPath(); g.arc(cx, cy, R, -Math.PI / 2 - A, -Math.PI / 2 + A); g.stroke();
+  g.lineWidth = 1;
+  g.fillStyle = "rgba(57, 255, 106, .55)";
+  for (const t of [-50, -25, 0, 25, 50]) {
+    const a = -Math.PI / 2 + (t / 50) * A, r1 = R + 2, r2 = R + (t ? 7 : 11);
+    g.beginPath(); g.moveTo(cx + r1 * Math.cos(a), cy + r1 * Math.sin(a)); g.lineTo(cx + r2 * Math.cos(a), cy + r2 * Math.sin(a)); g.stroke();
+  }
+  g.textAlign = "center";
+  g.fillText("−50", cx - R * Math.sin(A), cy - R * Math.cos(A) - 10);
+  g.fillText("+50", cx + R * Math.sin(A), cy - R * Math.cos(A) - 10);
+  g.fillText("Hz", cx, cy + 16);
+  g.textAlign = "start";
+  const e = Math.max(-50, Math.min(50, rttyErr)), a = -Math.PI / 2 + (e / 50) * A;
+  g.strokeStyle = Math.abs(e) < 10 && d.lock ? "#3cf07c" : "#ffb547";
+  g.lineWidth = 2;
+  g.shadowColor = g.strokeStyle; g.shadowBlur = 6;
+  g.beginPath(); g.moveTo(cx, cy); g.lineTo(cx + (R - 4) * Math.cos(a), cy + (R - 4) * Math.sin(a)); g.stroke();
+  g.shadowBlur = 0;
+  g.fillStyle = "#3cf07c";
+  g.beginPath(); g.arc(cx, cy, 3, 0, 2 * Math.PI); g.fill();
+}
+
+function drawRttyViz(d) {
+  rttyVizAt = Date.now();
+  rttyLast = d;
+  rttyFigs(d.figs);
+  $("rttyAuto").hidden = d.focus == null;
+  if (!rttyShown()) return;
+  const c = rttyCanvas();
+  if (!c) return;
+  ({ cross: drawRttyCross, wf: drawRttyWf, bars: drawRttyBars, eye: drawRttyEye })[rttyView](c, d);
+  const sg = (v) => (v >= 0 ? "+" : "−") + Math.abs(Math.round(v));
+  $("rttyIndInfo").textContent = !d.lock ? "searching…"
+    : `M ${sg(d.fm)} · S ${sg(d.fs)} Hz` + (rttyView === "bars" ? ` · err ${sg(rttyErr)} Hz` : "")
+      + (d.lm != null && rttyView === "bars" ? ` · ${Math.round(d.lm)}/${Math.round(d.ls)} dB` : "");
+}
+
+$("rttyView").addEventListener("click", (e) => { const b = e.target.closest("button[data-view]"); if (b) setRttyView(b.dataset.view); });
+$("rttyScope").addEventListener("click", (e) => {
+  if (rttyView !== "wf" || !rttyWf) return;
+  const r = $("rttyScope").getBoundingClientRect();
+  const hz = rttyWf.lo + ((e.clientX - r.left) / r.width) * (rttyWf.hi - rttyWf.lo);
+  rttyPost({ action: "focus", hz: Math.round(hz) }).then(renderRttyInfo).catch(() => {});
+});
+$("rttyAuto").addEventListener("click", () => rttyPost({ action: "focus", hz: null }).then(renderRttyInfo).catch(() => {}));
+setRttyView(rttyView);
+setInterval(() => {
+  rttyAsk();
+  if (rttyShown() && Date.now() - rttyVizAt > 3000) rttyScopeClear("no data");
+}, 2000);
 
 $("wefaxSave").addEventListener("click", () => {
   if (!wfx.rows) return;
@@ -10950,7 +12027,8 @@ function connectEvents(v) {
   on("cwchan", cwChanAdd);
   on("cwpeek", (d) => { if (st && !st.cw) cwBubbleAdd(d.t); });
   on("cwstate", renderCwInfo);
-  on("rttytext", (d) => rttyOut.add(d.t));
+  on("rttytext", (d) => rttyOut.add(d.t, d.q));
+  on("rttyviz", drawRttyViz);
   on("rttystate", renderRttyInfo);
   on("packet", (m) => { addPacket(m); decActivity("packet"); });
   on("packetstate", renderPacketInfo);
@@ -10972,6 +12050,8 @@ function connectEvents(v) {
   on("dabstate", (d) => { if (st) renderDabInfo(d); });
   on("ism", (m) => { addIsm(m); if (m.n === 1) decActivity("ism"); });
   on("ismstate", (d) => { if (st) renderIsmInfo(d); });
+  on("ismdev", (d) => ismDevUpdate(d));
+  on("ismnames", (n) => { ismNames = n || {}; ismRefreshNames(); });
   on("hfdl", (m) => { addHfdl(m); decActivity("hfdl"); });
   on("hfdlstate", (d) => { if (st) renderHfdlInfo(d); });
   on("hfdlinfo", onHfdlInfo);
@@ -11425,7 +12505,8 @@ async function loadDecoders() {
   const rti = await fetch(vbase + "/api/rtty").then((r) => r.json());
   if (v !== active) return;
   renderRttyInfo(rti);
-  if (rti.text) rttyOut.add(rti.text);
+  renderRttyStations(rti.stations);
+  if (rti.text) rttyOut.add(rti.text, rti.q, true);
   const decodes = await fetch(vbase + "/api/ft8").then((r) => r.json());
   if (v !== active) return;
   for (const d of decodes) addFt8(d, false);

@@ -109,6 +109,18 @@ Main Features
   - Two decoders, one packet: names learnt from one packet also join later packets read by only one decoder
     (same channel and device ID only, never a wM-Bus meter).
   - RAW at FSK: a package at the frequency (+-10 kHz) of a decoded one at the same time is not shown as RAW.
+- ISM page redesigned: views MESSAGES | DEVICES | TIMELINE.
+  - DEVICES: a card per device with large values (temperature, humidity, wind compass...), a 24 h curve of
+    temperature and humidity, battery, signal bars, age and interval of its messages; quiet devices fade.
+  - TIMELINE: a dot for each message of each device (1 h) or a block per 5 minutes (6 h / 24 h).
+  - 1 h / 6 h / 24 h in the header for DEVICES, TIMELINE and the device tab.
+  - A click on a card opens the device's tab: its details and a chart of every value it sends over
+    1 h / 6 h / 24 h (temperature, humidity, wind, rain...), signal (RSSI / SNR) and messages per interval.
+    One cursor for all charts, drag to zoom all of them in, double click back (uPlot charts).
+  - Names, pins and hiding on the cards (data\ism_devices.json, all VFOs); NEW badge for a device never heard
+    on this PC in 60 days (data\ism_known.json).
+  - Category chips (weather, TPMS, remotes, security, alarms, meters, other, RAW) and a filter for all views;
+    messages per minute, devices and top models. Rows flash on a new message, CRC check mark, a picture of the pulses in RAW rows.
 - Windows setup RADIMCOM_Setup_v<version>.exe: its own Python (no Python installation, no internet, no admin
   rights), drivers / DSD-FME / autostart as check boxes, Start menu entries, uninstall (asks about data\).
   The same setup upgrades an installation (data\ stays), also a zip installation of 0.114 or older: it tells
@@ -137,7 +149,21 @@ Main Features
     35 WPM at 6 dB 23 % -> 0 %.
   - Block diagram docs/images/cw_decoder.png: where the decoder takes the signal (after AGC+, DC, SPUR;
     before the filter, ALC and DNR) and how it works inside.
+- RTTY page like an old terminal, with tuning indicators.
+  - Switchable indicator right of the text: CROSS (crossed ellipses, a sharp + = well tuned), WF (mini
+    waterfall with the mark / space tones), BARS (tone levels + tuning needle), EYE (eye diagram).
+  - Click into the mini waterfall: the decoder looks for the tones only there; AUTO = whole passband.
+  - Teletype text with a blinking cursor, unsure characters dim amber, UTC time in the margin.
+  - Backlit badges Bd / Hz / NORM / LTRS-FIGS, SNR LED bar, known station label (DWD Pinneberg,
+    amateur RTTY segments).
+  - KNOWN... list: choose a known RTTY transmission (DWD Pinneberg, amateur segments) and the VFO tunes
+    there in USB with the decoder on.
+  - NO BAUDOT: synchronous / encrypted FSK data is recognised (other speeds tried first) and its
+    garbage text is not written.
+  - Fix: Auto speed no longer jumps from a speed that decodes well (45.45 -> 50 Bd with noise).
 Changes
+- Fix (by Brano, brjanicek): auto squelch - the noise of the channel from the spectrum was not initialised
+  (a line glued into a comment).
 - Map tabs (the new-tab key of a map) no longer stop the main window: the browser keeps at most 6 connections
   to one receiver, and 3-4 map tabs used them up (no audio, page not responding). The map tabs now get the
   events from the main window; an own connection only while no main window is open.
