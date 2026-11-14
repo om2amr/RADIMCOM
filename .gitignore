@@ -6,6 +6,9 @@ __pycache__/
 # data of this PC (settings, memories, logs, recordings, backups)
 data/
 
+# private notes / plans: own private repository om2amr/RADIMCOM-todo (only om2amr + brjanicek), never in this public one
+/todo/
+
 # old data location (before the move to data/)
 /config.json
 /config_*.json
