@@ -3059,3 +3059,26 @@ html.app-shell .r-logo-led:hover .r-logo-ledtip { display: inline; }
 .r-keys #bandwidths > button:only-child { grid-row: 1; height: 28px; }
 .r-keys .keys#bandwidths:has(> button:only-child) { grid-template-rows: 28px; }
 .r-keys .kgroup[data-g="FILTER"]:has(#bandwidths > button:only-child) { align-self: flex-start; }
+/* SONDE card (DECODERS › SONDE): SONDES, MAP and FRAMES like AIS */
+.sonde table { table-layout: fixed; }
+.sonde table.sonde-table { min-width: 1250px; }
+.sonde table.sonde-frame-table { min-width: 1050px; }
+.sonde .c-utc { width: 74px; } .sonde .c-type { width: 52px; } .sonde .c-ser { width: 96px; } .sonde .c-mhz { width: 70px; }
+.sonde .c-pos { width: 200px; } .sonde .c-alt { width: 70px; } .sonde .c-vv { width: 58px; } .sonde .c-vh { width: 54px; }
+.sonde .c-dir { width: 46px; } .sonde .c-dist { width: 56px; } .sonde .c-az { width: 104px; } .sonde .c-sat { width: 44px; }
+.sonde .c-bat { width: 54px; } .sonde .c-n { width: 54px; }
+.sonde td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sonde td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.sonde td.ser, .sonde td.ser a { color: var(--amber); }
+.sonde td a { color: #6cb8ff; text-decoration: underline dotted; }
+.sonde td.up, .sonde-ml .up { color: var(--green); }
+.sonde td.down, .sonde-ml .down { color: #ff9b6b; }
+.sonde tr.old td { opacity: .5; }
+#sondeMap { flex: 1 1 0; min-height: 300px; border: 1px solid var(--line); border-radius: 6px; background: #0e1116; }
+#sondeMap.leaflet-container { font: 12px system-ui, sans-serif; }
+.ais-ml.sonde-ml { grid-template-columns: 1fr 48px 74px 50px 50px; }
+.sonde-mk svg { width: 22px; height: 22px; fill: #6cff9c; filter: drop-shadow(0 0 2px #000); }   /* green balloon rising */
+.sonde-mk svg .ln { fill: none; stroke: #6cff9c; stroke-width: 1.4; }
+.sonde-mk.fall svg { fill: #ffd84a; } .sonde-mk.fall svg .ln { stroke: #ffd84a; }      /* yellow parachute after the burst */
+.sonde-mk.old svg { fill: #8a929c; } .sonde-mk.old svg .ln { stroke: #8a929c; }
+.sonde-mk.sel svg { fill: #ff4b3c; } .sonde-mk.sel svg .ln { stroke: #ff4b3c; }
