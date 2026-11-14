@@ -13,7 +13,8 @@ frequency only because it chooses the FSK detector by it and reports it; a small
 Channels: rtl_433 does not filter, it finds pulses in the envelope of everything it gets. Given the whole 2 MHz, the noise
 of the whole band and all transmitters in it merge into long "packages", and of those at most one device is decoded. So the
 2.048 MS/s of the dongle are cut here into narrow channels of 256 kS/s (mixed down, low-pass filtered, decimated by 8),
-each with its own rtl_433: 433.92 MHz (most devices) and 433.42 MHz (Somfy and others), 868.30 MHz. Measured on a 5 min
+each with its own rtl_433: 433.92 MHz (most devices), 433.42 MHz (Somfy and others) and 434.42 MHz (car keys, e.g.
+VW / Škoda / Audi; 434.40 MHz is a common key frequency), 868.30 MHz. Measured on a 5 min
 recording at 433.92 MHz: 107 messages in the whole band, 236 in the 256 kS/s channel, and rtl_433 needs 6x less CPU.
 The filtering runs in the thread that sends the samples of each channel, not in the receiver thread.
 
@@ -48,7 +49,7 @@ CH_CUTOFF = 0.45              # its -6 dB point, as a part of the channel's samp
 CH_GAIN = 1.0                 # the channel back to u8 bytes, same scale as the dongle (measured: clipping stays ~0.002 %)
 # channels around each preset: (offset from the centre of the dongle, sample rate, rtl_433 -Y autolevel)
 # 433: OOK; autolevel lost messages there. 868: FSK; autolevel found the weaker devices.
-CHANNELS = {433920000: ((0, CH_RATE, False), (-500000, CH_RATE, False)),
+CHANNELS = {433920000: ((0, CH_RATE, False), (-500000, CH_RATE, False), (500000, CH_RATE, False)),   # 433.92, 433.42, 434.42
             868300000: ((0, CH_RATE, True), (650000, CH_RATE, True))}   # 868.30 sensors, 868.95 wM-Bus meters
 RAW_MIN_PULSES = 20           # smaller undecoded packages are noise
 RAW_MERGE_S = 10.0            # RAW packages of one kind near one frequency within this time = one row with a count
@@ -80,6 +81,10 @@ NAMES_FILE = data("ism_devices.json")
 KNOWN_FILE = data("ism_known.json")
 KNOWN_KEEP_DAYS = 60          # a device not heard this long is forgotten (comes NEW again)
 KNOWN_SAVE_S = 60.0
+# a RAW signal marked with a name (e.g. a car key: rolling code, no rtl_433 decoder): its later packages with the same
+# modulation guess, near the frequency and with about the same number of pulses are that device
+RAW_SIG_HZ = 30000
+RAW_SIG_PULSES = 0.3
 
 # fields with their own column, or not worth showing
 _COLUMNS = {"time", "model", "id", "channel", "mod", "freq", "freq1", "freq2", "rssi", "snr", "noise", "protocol", "mic"}
@@ -155,8 +160,9 @@ def load_names():
         return {}
 
 
-def set_name(key, name=None, pin=None, hide=None):
-    """Changes the name, pin or hidden flag of one device; returns all names. Read again first: other VFOs write too."""
+def set_name(key, name=None, pin=None, hide=None, sig=None):
+    """Changes the name, pin or hidden flag of one device; returns all names. Read again first: other VFOs write too.
+    sig: the signature of a marked RAW signal (raw_match); a mark without a name is removed."""
     key = _clean(key)[:200]
     names = load_names()
     e = dict(names.get(key) or {})
@@ -166,6 +172,10 @@ def set_name(key, name=None, pin=None, hide=None):
         e["pin"] = bool(pin)
     if hide is not None:
         e["hide"] = bool(hide)
+    if sig is not None:
+        e["sig"] = sig
+    if not e.get("name"):
+        e.pop("sig", None)
     e = {k: v for k, v in e.items() if v}
     if e:
         names[key] = e
@@ -176,6 +186,33 @@ def set_name(key, name=None, pin=None, hide=None):
         json.dump(names, f, ensure_ascii=False, indent=1)
     os.replace(tmp, NAMES_FILE)
     return names
+
+
+_sigs = [None, []]                # mtime of data/ism_devices.json, [(device key, signature)]
+
+
+def raw_sigs():
+    """The marked RAW signals, read again when the file changed (also by another VFO)."""
+    try:
+        mt = os.stat(NAMES_FILE).st_mtime
+    except OSError:
+        return []
+    if _sigs[0] != mt:
+        _sigs[:] = [mt, [(k, e["sig"]) for k, e in load_names().items()
+                         if isinstance(e, dict) and isinstance(e.get("sig"), dict)]]
+    return _sigs[1]
+
+
+def raw_match(freq_hz, mod, guess, pulses):
+    """Device key of the marked RAW signal this package belongs to, or None."""
+    for key, s in raw_sigs():
+        try:
+            if abs(freq_hz - s["f"]) <= RAW_SIG_HZ and s.get("mod", "") == mod and s.get("guess") == guess \
+                    and abs(pulses - s["p"]) <= max(3, s["p"] * RAW_SIG_PULSES):
+                return key
+        except (KeyError, TypeError):
+            continue
+    return None
 
 
 def _load_known():
@@ -739,31 +776,75 @@ class IsmDecoder:
         freq_hz = round(ch.start_hz + self.center_hz - self.start_hz + foff)
         view = b["view"][0] if "view" in b else ""
         flex = _clean(b["flex"][0]) if "flex" in b else ""
+        mod = b.get("mod", "")
+        key = raw_match(freq_hz, mod, guess, pulses)       # a marked signal (e.g. a car key): a device with its name
+        dev = None
         with self.lock:
             self.raw_count += 1
             m = None
             for row in reversed(self.history):
                 if row.get("raw") and now - row["last"] < RAW_MERGE_S and row["guess"] == guess \
-                        and abs(row["freq_hz"] - freq_hz) <= RAW_MERGE_HZ:
+                        and abs(row["freq_hz"] - freq_hz) <= RAW_MERGE_HZ and row.get("dev") == key:
                     row["n"] += 1            # an unknown transmitter (or interference) that keeps sending: one row
                     row["last"] = now
                     self.history.remove(row)
                     self.history.append(row)
                     if codes or not row["has_codes"]:     # show the latest package, but keep one with bits
-                        row.update(text=" · ".join(parts), has_codes=bool(codes), rssi=rssi, snr=snr,
+                        row.update(text=" · ".join(parts), has_codes=bool(codes), rssi=rssi, snr=snr, pulses=pulses,
                                    view=view or row["view"], flex=flex or row["flex"])
                     m = dict(row)
                     break
             if m is None:
                 m = {"id": self.next_id, "time": round(now, 1), "last": now, "n": 1, "freq_hz": freq_hz,
                      "model": "RAW", "models": ["RAW"], "guess": guess, "has_codes": bool(codes), "pkt": None,
-                     "dev_id": "", "channel": "", "text": " · ".join(parts), "mod": b.get("mod", ""),
-                     "rssi": rssi, "snr": snr, "protocol": None, "mic": "", "raw": True, "view": view, "flex": flex}
+                     "dev_id": key.split("|")[1] if key else "", "channel": "", "text": " · ".join(parts), "mod": mod,
+                     "rssi": rssi, "snr": snr, "protocol": None, "mic": "", "raw": True, "view": view, "flex": flex,
+                     "pulses": pulses}
+                if key:
+                    m["dev"] = key
                 self.next_id += 1
                 self.history.append(m)
                 m = dict(m)
+            if key:
+                dev = self._device("RAW", dict(m, freq_hz=freq_hz, rssi=rssi, snr=snr), {}, now)
         self.on_event("ism", m)
+        if dev:
+            self.on_event("ismdev", dev)
+            self._save_known(now)
         self._emit_state()
+
+    def mark_raw(self, row_id, name):
+        """Marks the signal of a RAW row with a name: this row and its later packages are a device (DEVICES, TIMELINE).
+        Returns all names, or None when the row is gone."""
+        with self.lock:
+            row = next((r for r in self.history if r["id"] == row_id and r.get("raw")), None)
+            if row is None:
+                return None
+            row = dict(row)
+        key = row.get("dev")
+        if not key:
+            m = re.search(r"m=(\w+)", row.get("flex") or "")
+            kind = m.group(1) if m else (row["mod"] or "RAW")
+            key = self._dev_key("RAW", f"{row['freq_hz'] / 1e6:.3f} {kind}", "")
+        p = re.search(r"(\d+) pulses", row.get("text") or "")
+        sig = {"f": row["freq_hz"], "mod": row["mod"], "guess": row["guess"],
+               "p": row.get("pulses") or (int(p.group(1)) if p else 0)}
+        names = set_name(key, name, sig=sig if name.strip() else None)
+        if not name.strip():
+            return names
+        now = time.time()
+        with self.lock:
+            for r in self.history:
+                if r["id"] == row_id:
+                    r["dev"], r["dev_id"] = key, key.split("|")[1]
+                    row = dict(r)
+                    break
+            dev = self.devices.get(key)
+            dev = self._dev_public(dev) if dev else self._device("RAW", row, {}, now)
+        self.on_event("ism", row)
+        self.on_event("ismdev", dev)
+        self._save_known(now)
+        return names
 
     def _emit_state(self):
         self.on_state(self.info())

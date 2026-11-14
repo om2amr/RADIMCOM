@@ -1232,6 +1232,9 @@ body.map-only .ft8-map.map-only-box { flex-direction: column; }
 .ism tr.raw td { color: var(--muted); }
 .ism tr.raw td.data { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
 .ism a.pdv { margin-left: 6px; text-decoration: none; }
+.ism .ism-mark { margin-left: 6px; padding: 0 4px; font-size: 11px; line-height: 14px; background: none; border: 1px solid var(--line, #444);
+  border-radius: 3px; color: inherit; cursor: pointer; opacity: .6; }
+.ism .ism-mark:hover { opacity: 1; }
 /* ISM: categories, filter and statistics; message rows flash; DEVICES cards; TIMELINE */
 .ism-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; font-size: 12px; }
 .ism-cats { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -3060,6 +3063,12 @@ html.app-shell .r-logo-led:hover .r-logo-ledtip { display: inline; }
 .r-keys .keys#bandwidths:has(> button:only-child) { grid-template-rows: 28px; }
 .r-keys .kgroup[data-g="FILTER"]:has(#bandwidths > button:only-child) { align-self: flex-start; }
 /* SONDE card (DECODERS › SONDE): SONDES, MAP and FRAMES like AIS */
+/* launch sites on the SONDE map: green pulsing = a sonde probably in the air, the layer switch dark like the map */
+.sonde-site-air { animation: sonde-site-pulse 1.6s ease-in-out infinite; }
+@keyframes sonde-site-pulse { 50% { stroke-width: 6; stroke-opacity: .35; } }
+.sonde-ok { color: var(--green); }
+.sonde-air { color: var(--green); }
+#sondeMap .leaflet-control-layers { background: rgba(10, 13, 18, .9); color: #dfe4ea; border: 1px solid var(--line2); }
 .sonde table { table-layout: fixed; }
 .sonde table.sonde-table { min-width: 1250px; }
 .sonde table.sonde-frame-table { min-width: 1050px; }
@@ -3082,3 +3091,6 @@ html.app-shell .r-logo-led:hover .r-logo-ledtip { display: inline; }
 .sonde-mk.fall svg { fill: #ffd84a; } .sonde-mk.fall svg .ln { stroke: #ffd84a; }      /* yellow parachute after the burst */
 .sonde-mk.old svg { fill: #8a929c; } .sonde-mk.old svg .ln { stroke: #8a929c; }
 .sonde-mk.sel svg { fill: #ff4b3c; } .sonde-mk.sel svg .ln { stroke: #ff4b3c; }
+/* DAB CHANNEL list: channels saved in a memory in green (also the list while such a channel is chosen) */
+#dabChannel option.dab-mem, #dabChannel.dab-mem { color: var(--green); font-weight: 600; }
+#dabChannel option:not(.dab-mem) { color: var(--text, #e6e9ee); font-weight: 400; }

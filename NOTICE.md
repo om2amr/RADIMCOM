@@ -43,6 +43,7 @@ does not contain the binaries; the release packages do, except where noted.
 | Flask, NumPy, SciPy, pyserial | Python packages; in the Python of the setup (`python\`), `install.bat` installs them from PyPI | BSD (NumPy/SciPy include OpenBLAS: BSD, GCC runtime: GPL with GCC Runtime Library Exception) | PyPI |
 | Python 3.13 | runs RADIMCOM; the setup brings it in `python\` (NuGet package "python") | PSF License | <https://www.python.org> |
 | Microsoft Edge WebView2 SDK | the app window of `RADIMCOM.exe` (`Microsoft.Web.WebView2.*.dll`, `WebView2Loader.dll`) | Microsoft WebView2 SDK licence (`WebView2_LICENSE.txt`), redistributable | <https://www.nuget.org/packages/Microsoft.Web.WebView2> |
+| SondeHub launch sites | radiosonde launch sites on the SONDE map: downloaded at run time from `api.v2.sondehub.org/sites` into `data/sonde_sites.json`, not part of the package; type names from the SondeHub tracker | tracker code MIT | <https://sondehub.org> · <https://github.com/projecthorus/sondehub-tracker> |
 | uPlot 1.6.31 | charts of the ISM device tab; in `static/uplot` | MIT (`static/uplot/LICENSE`) | <https://github.com/leeoniya/uPlot> |
 | Leaflet 1.9.4 | map for choosing the station place (SATELLITES tab, SETUP); in `static/leaflet` | BSD 2-Clause (`static/leaflet/LICENSE`) | <https://leafletjs.com> |
 | Natural Earth 1:50m land and country borders | world map (SATELLITES tab, MAP); simplified in `static/world.js` by `installer/make_world.py` | public domain | <https://www.naturalearthdata.com/> |

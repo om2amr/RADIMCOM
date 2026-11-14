@@ -135,7 +135,8 @@ Main Features
   console; closing the window keeps the receiver in the tray (decoders, recordings go on), tray menu: open,
   browser, data folder, server log, SDR setup, start / stop / restart server, Exit. A second start only brings the window up.
   Full screen: F11 or the small icon in the corner beside the logo (remembered, orange while on).
-  MAIN = the green LED of the logo: under the mouse it turns red ("MAIN OFF"), a click switches RADIMCOM off.
+  MAIN = the green LED of the logo: under the mouse it turns red ("MAIN OFF"), a click switches RADIMCOM off
+  (the whole server: all VFOs, decoders and recordings; the app closes, nothing stays in the tray).
   Resizing the window keeps the aspect ratio of the page (no stretched page).
   Icon: spectrum over a waterfall.
 - SDR setup in a window instead of the console (tray menu "SDR setup...", Start menu, end of the installation):
@@ -174,6 +175,13 @@ Main Features
   - AFC prefers standard shifts and keeps the followed station while it listens (contest 18-34 % -> 4-7 %).
   - Each over (or another station) starts a new line with its UTC time.
 Changes
+- ISM: third channel 434.42 MHz at the 433.92 preset (car keys at 434.40 MHz; mostly only as RAW rows).
+- ISM: a RAW signal can be marked with a name (✎ on the RAW row, e.g. a car key); it then shows as a device.
+- DAB: channels saved in a memory are green in the CHANNEL list.
+- SONDE: 403 MHz key - tunes the VFO to the middle of the sonde band in FM and switches the decoder on.
+- SONDE map: radiosonde launch sites in Europe (from SondeHub, kept a week in data\sonde_sites.json) with
+  sondes, frequencies, launch times, next launch, sonde in the air now. Own sites (e.g. military ones):
+  data\sonde_sites_extra.json, format in docs\decoders\sonde.md.
 - Fix (by Brano, brjanicek): auto squelch - the noise of the channel from the spectrum was not initialised
   (a line glued into a comment).
 - Map tabs (the new-tab key of a map) no longer stop the main window: the browser keeps at most 6 connections

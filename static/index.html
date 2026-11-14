@@ -787,6 +787,7 @@
     <section class="card ft8 sonde" id="sondeCard" data-dec="sonde" hidden>
       <div class="ft8-head">
         <label class="key small toggle" data-dec-on="sonde" title="Radiosonde decoder (Vaisala RS41, 400–406 MHz) on/off"><input id="sondeOn" type="checkbox">ON</label>
+        <div class="bands"><button id="sondeGo" title="Tune the VFO to 403.000 MHz in FM, the middle of the radiosonde band 400–406 MHz, and switch the decoder on">403 MHz</button></div>
         <button id="sondeInfoKey" class="key small" title="Show / hide the description of the decoder">INFO</button>
         <div class="bands" id="sondeViews">
           <button class="key small on" data-view="sondes" title="Sondes heard: the newest data of each">SONDES</button>
@@ -814,7 +815,7 @@
         <div id="sondeEmpty" class="ft8-empty">No sondes yet. Tune the VFO onto a sonde in 400–406 MHz (often 401–405 MHz); a sonde in flight sends a frame every second.</div>
       </div>
       <div class="ais-map" id="sondeMapBox" hidden>
-        <div class="ais-map-main"><div id="sondeMap"></div><div id="sondeMapNote" class="muted"></div></div>
+        <div class="ais-map-main"><div id="sondeMap"></div><div id="sondeMapNote" class="muted"></div><div id="sondeSitesNote" class="muted" title="Radiosonde launch sites in Europe from the SondeHub list (downloaded once a week into data\sonde_sites.json); own sites in data\sonde_sites_extra.json. A click on a site shows its sondes, frequencies, launch times and the next launch."></div></div>
         <div class="ais-map-list" id="sondeMapList"></div>
       </div>
       <div class="ft8-table" id="sondeFrameBox" hidden>
@@ -950,7 +951,7 @@
         <div class="ism-stats"><canvas id="ismRate"></canvas><span id="ismStatText"></span></div>
       </div>
       <p class="note" id="ismNote" hidden>Devices on 433 and 868 MHz: weather sensors, remote controls, tyre sensors and more, decoded by rtl_433.
-        The VFO runs at 2.048 MS/s and its audio is muted; RADIMCOM cuts narrow channels of 256 kHz out of it for rtl_433 (433.92 and 433.42 MHz, or 868.30 and 868.95 MHz), which decodes about twice as many messages as the whole band at once. The buttons centre the VFO.
+        The VFO runs at 2.048 MS/s and its audio is muted; RADIMCOM cuts narrow channels of 256 kHz out of it for rtl_433 (433.92, 433.42 and 434.42 MHz, or 868.30 and 868.95 MHz), which decodes about twice as many messages as the whole band at once. The buttons centre the VFO.
         Gain stays the VFO's: a nearby sensor can overload the dongle at high gain. RTL-SDR only.
         Names, pins and hidden devices are kept in data\ism_devices.json (all VFOs); NEW = a device never heard on this PC in the last 60 days (data\ism_known.json).</p>
       <div class="ism-devs" id="ismDevBox" hidden>

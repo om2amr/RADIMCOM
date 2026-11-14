@@ -57,7 +57,7 @@ def test_channel_rejects_outside():
 
 def test_offsets():
     d = ism.IsmDecoder(lambda *a: None, lambda *a: None)
-    assert [c[0] for c in d._offsets(FS, 433920000)] == [0, -500000]
+    assert [c[0] for c in d._offsets(FS, 433920000)] == [0, -500000, 500000]   # 433.92, 433.42, 434.42 MHz
     assert d._offsets(FS, 868300000)[0][:2] == (0, 256000)
     assert d._offsets(1000000, 433920000) == ((0, 1000000, False),)   # not a multiple of 256 kS/s: whole band
 
@@ -217,3 +217,27 @@ def test_same_packet_needs_same_channel_and_id():
     d._handle({"model": "Wireless-MBus", "id": 15, "freq": 433.92, "rssi": -5.1, "snr": 20.0}, ch)
     assert [m["model"] for m in d.history] == ["LaCrosse-TX29IT", "Somfy-RTS", "Honeywell-CM921", "Wireless-MBus"]
     assert not d.aliases
+
+
+def test_raw_mark_becomes_device():
+    ism.NAMES_FILE = os.path.join(tempfile.gettempdir(), "radimcom_test_ism_names.json")
+    if os.path.exists(ism.NAMES_FILE):
+        os.remove(ism.NAMES_FILE)
+    d, ch, ev = make()
+    b = {"mod": "OOK", "count": ("66", "120.5"), "level": ("-9.0", "12.0"), "foff": ("+480.0",),
+         "guess": ("Pulse Width Modulation with sync/delimiter",), "flex": ("-X 'n=name,m=OOK_PWM,s=400,l=800'",)}
+    d._handle_raw(b, ch)                                  # 434.40 MHz, not marked yet
+    row = d.history[-1]
+    assert "dev" not in row and not d.devices
+    names = d.mark_raw(row["id"], "My car key")
+    key = "RAW|434.400 OOK_PWM|"
+    assert names[key]["name"] == "My car key" and names[key]["sig"]["p"] == 66
+    assert key in d.devices and d.history[-1]["dev"] == key
+    time.sleep(0.02)                                      # another mtime for the file cache
+    d._handle_raw(dict(b, count=("70", "121.0"), foff=("+470.0",)), ch)   # the key again a minute later
+    assert d.devices[key]["n"] == 2 and ev[-2].get("dev") == key and ev[-1]["key"] == key
+    d._handle_raw(dict(b, count=("20", "30.0")), ch)       # another transmitter there: still RAW
+    assert "dev" not in d.history[-1]
+    ism.set_name(key, "")                                 # no name: the mark is gone
+    assert key not in ism.load_names()
+    os.remove(ism.NAMES_FILE)

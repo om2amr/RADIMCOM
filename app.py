@@ -872,6 +872,13 @@ def api_pocsag_cmd():
     return jsonify(pocsag.info(msgs=False))
 
 
+@app.route("/api/sonde/sites")
+def api_sonde_sites():
+    """Radiosonde launch sites in Europe for the SONDE map (SondeHub list, cached a week, + data/sonde_sites_extra.json)."""
+    import sonde_sites
+    return jsonify(sonde_sites.sites())
+
+
 @app.route("/api/sonde", methods=["GET"])
 def api_sonde():
     return jsonify(sonde.info())
@@ -1131,6 +1138,16 @@ def api_ism_cmd():
             names = ism_mod.set_name(str(body["key"]), body.get("name"), body.get("pin"), body.get("hide"))
         except OSError as e:
             return jsonify(error=str(e)), 500
+        hub.event("ismnames", names)
+        return jsonify(names=names)
+    elif body.get("action") == "rawmark":
+        # a RAW signal (e.g. a car key) gets a name: its later packages are that device
+        try:
+            names = ism.mark_raw(int(body.get("id", -1)), str(body.get("name") or ""))
+        except (OSError, ValueError) as e:
+            return jsonify(error=str(e)), 500
+        if names is None:
+            return jsonify(error="the row is gone"), 404
         hub.event("ismnames", names)
         return jsonify(names=names)
     return jsonify(ism.info())

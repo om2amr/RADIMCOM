@@ -5482,7 +5482,7 @@ function renderDab(s) {
   const on = !!s.dab;
   renderControls();   // the DAB key of MODE
   renderModeTabs();
-  if (on && s.dab_channel && $("dabChannel").value !== s.dab_channel) $("dabChannel").value = s.dab_channel;
+  if (on && s.dab_channel && $("dabChannel").value !== s.dab_channel) { $("dabChannel").value = s.dab_channel; renderDabChannelMems(); }
   renderDabInfo({ enabled: on, error: s.dab_error });
   if (on && !dabTimer) { pollDab(); dabTimer = setInterval(pollDab, 1000); }
   if (!on && dabTimer) stopDab();
@@ -5705,7 +5705,22 @@ function dabSetChannel(ch) {
   st.dab_channel = ch;
   send({ dab_channel: ch });
 }
-$("dabChannel").addEventListener("change", () => dabSetChannel($("dabChannel").value));
+$("dabChannel").addEventListener("change", () => { dabSetChannel($("dabChannel").value); renderDabChannelMems(); });
+
+/** CHANNEL list of DAB: channels with a memory (a DAB memory of that channel) in green, their names in the tooltip;
+ *  the list itself green while such a channel is chosen. */
+function renderDabChannelMems() {
+  const sel = $("dabChannel"), by = new Map();
+  for (const m of mems) if (m.dab_channel) by.set(m.dab_channel, [...(by.get(m.dab_channel) || []), m.name || "(no name)"]);
+  for (const o of sel.options) {
+    const names = by.get(o.value);
+    o.classList.toggle("dab-mem", !!names);
+    o.title = names ? `In memory: ${names.join(", ")}` : "";
+  }
+  const cur = by.get(sel.value);
+  sel.classList.toggle("dab-mem", !!cur);
+  sel.title = cur ? `Channel ${sel.value} is in memory: ${cur.join(", ")}` : "";
+}
 /** A DAB memory: DAB on, on its channel. Where DAB cannot run, dabOn says why. */
 function dabRecall(ch) {
   if (!noRtlDongle(st) && !st.chain_owner) dabSetChannel(ch);
@@ -6454,15 +6469,126 @@ async function sondeMapOpen() {
     }).addTo(sondeMap);
     mapPopout(sondeMap, "sonde");
     sondeLayers = { tracks: L.layerGroup().addTo(sondeMap), marks: L.layerGroup().addTo(sondeMap), m: new Map() };
+    sondeSitesInit();
     try {
       const s = await satFetch("/api/location");
       if (s && Number.isFinite(s.lat) && Number.isFinite(s.lon)) {
+        sondeQth = s;
         L.circleMarker([s.lat, s.lon], { radius: 6, color: "#000", weight: 2, fillColor: "#ff5a3c", fillOpacity: 1 }).bindTooltip("QTH").addTo(sondeMap);
         sondeMap.setView([s.lat, s.lon], 7);
       }
     } catch { /* server unreachable */ }
   }
   return true;
+}
+
+// ----- SONDE map: radiosonde launch sites in Europe (SondeHub list, /api/sonde/sites; own ones in data\sonde_sites_extra.json)
+// A site with a launch within the next hour is amber, one whose sonde is probably in the air now (up to 2.5 h after the
+// launch) green and pulsing. The times of the list are the synoptic times (UTC); the balloon goes up about 45 min before.
+let sondeSites = [], sondeSitesLayer = null, sondeQth = null, sondeSitesTimer = null;
+const SONDE_LAUNCH_BEFORE_S = 45 * 60;
+const SONDE_FLIGHT_S = 2.5 * 3600;
+const SONDE_DAYS = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** Launches of a site around now: the last one (within the flight time) and the next one, as epoch seconds. */
+function sondeSiteLaunches(site, now = Date.now() / 1000) {
+  let last = null, next = null;
+  for (const t of site.times || []) {
+    const [d, h, m] = t.split(":").map(Number);
+    if (![d, h, m].every(Number.isFinite)) continue;
+    const base = new Date(now * 1000);
+    for (let k = -8; k <= 8; k++) {                      // the days around today
+      const day = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate() + k, h, m));
+      const wd = day.getUTCDay() || 7;                    // 1 = Monday … 7 = Sunday, like the list
+      if (d && d !== wd) continue;
+      const launch = day.getTime() / 1000 - SONDE_LAUNCH_BEFORE_S;
+      if (launch <= now && (last == null || launch > last)) last = launch;
+      if (launch > now && (next == null || launch < next)) next = launch;
+    }
+  }
+  return { last: last != null && now - last < SONDE_FLIGHT_S ? last : null, next };
+}
+
+function sondeSiteState(site) {
+  const l = sondeSiteLaunches(site), now = Date.now() / 1000;
+  return l.last != null ? "air" : l.next != null && l.next - now < 3600 ? "soon" : "";
+}
+
+const sondeHm = (t) => new Date(t * 1000).toISOString().slice(11, 16);
+const sondeIn = (s) => (s < 3600 ? `${Math.round(s / 60)} min` : `${Math.floor(s / 3600)} h ${Math.round((s % 3600) / 60)} min`);
+
+function sondeSitePopup(site) {
+  const l = sondeSiteLaunches(site), now = Date.now() / 1000;
+  const lines = [`<b>${escHtml(site.name)}</b>${site.own ? ' <span class="muted">(own)</span>' : ""}`,
+    `<span class="muted">${/^\d+$/.test(site.id) ? `WMO ${escHtml(site.id)}` : "no WMO number"}${site.alt != null ? ` · ${Math.round(site.alt)} m a.s.l.` : ""}</span>`];
+  if (site.note) lines.push(escHtml(site.note));
+  if (site.types && site.types.length) {
+    lines.push(`Sondes: ${site.types.map((t) => `<span class="${t.decoded ? "sonde-ok" : "muted"}" title="${t.decoded ? "decoded by RADIMCOM" : "not decoded by RADIMCOM"}">${escHtml(t.name)}${t.mhz ? ` ${t.mhz.toFixed(3)} MHz` : ""}</span>`).join(", ")}`);
+  }
+  if (site.times && site.times.length) {
+    const daily = site.times.filter((t) => t.startsWith("0:")).map((t) => t.slice(2)).sort();
+    const week = site.times.filter((t) => !t.startsWith("0:")).map((t) => { const [d, h, m] = t.split(":"); return `${SONDE_DAYS[+d] || d} ${h.padStart(2, "0")}:${m}`; });
+    lines.push(`Times (UTC): ${[daily.length ? `daily ${daily.join(", ")}` : "", week.join(", ")].filter(Boolean).join("; ")}`);
+    if (l.last != null) lines.push(`<span class="sonde-air">In the air: launched about ${sondeHm(l.last)} UTC (${sondeIn(now - l.last)} ago)</span>`);
+    if (l.next != null) lines.push(`Next launch about <b>${sondeHm(l.next)} UTC</b> (in ${sondeIn(l.next - now)})`);
+  } else lines.push('<span class="muted">Launch times not known</span>');
+  const st = [site.ascent_rate && `ascent ${site.ascent_rate} m/s`, site.burst_altitude && `burst ≈ ${Math.round(site.burst_altitude / 100) / 10} km`,
+    site.descent_rate && `descent ${site.descent_rate} m/s`].filter(Boolean);
+  if (st.length) lines.push(`<span class="muted">Usually ${st.join(", ")}</span>`);
+  if (sondeQth) {
+    const r = Math.PI / 180, f1 = sondeQth.lat * r, f2 = site.lat * r, dl = (site.lon - sondeQth.lon) * r;
+    const km = Math.acos(Math.min(1, Math.sin(f1) * Math.sin(f2) + Math.cos(f1) * Math.cos(f2) * Math.cos(dl))) * 6371;
+    const az = (Math.atan2(Math.sin(dl) * Math.cos(f2), Math.cos(f1) * Math.sin(f2) - Math.sin(f1) * Math.cos(f2) * Math.cos(dl)) / r + 360) % 360;
+    lines.push(`${Math.round(km)} km from the QTH, azimuth ${Math.round(az)}°`);
+  }
+  if (!site.own) lines.push('<span class="muted">Site list: <a href="https://sondehub.org" target="_blank" rel="noopener">SondeHub</a></span>');
+  return lines.join("<br>");
+}
+
+/** Colours of the site markers by their launch state (called once a minute). */
+function sondeSitesStyle() {
+  if (!sondeSitesLayer) return;
+  for (const mk of sondeSitesLayer.getLayers()) {
+    const s = sondeSiteState(mk.site);
+    mk.setStyle(s === "air" ? { color: "#3cf07c", fillColor: "#3cf07c", fillOpacity: 0.9, weight: 2, radius: 6 }
+      : s === "soon" ? { color: "#ffb547", fillColor: "#ffb547", fillOpacity: 0.9, weight: 2, radius: 6 }
+        : { color: "#9aa4b1", fillColor: "#e8ecf1", fillOpacity: 0.85, weight: 1.5, radius: 4 });
+    const el = mk.getElement && mk.getElement();
+    if (el) el.classList.toggle("sonde-site-air", s === "air");
+  }
+  const air = sondeSitesLayer.getLayers().filter((m) => sondeSiteState(m.site) === "air").length;
+  const soon = sondeSitesLayer.getLayers().filter((m) => sondeSiteState(m.site) === "soon").length;
+  $("sondeSitesNote").textContent = sondeSites.length
+    ? `Launch sites: ${sondeSites.length} · green = sonde probably in the air (${air}) · amber = launch within 1 h (${soon})` : "";
+}
+
+async function sondeSitesLoad() {
+  let d;
+  try { d = await satFetch("/api/sonde/sites"); } catch (e) { $("sondeSitesNote").textContent = `Launch sites: ${e.message}`; return; }
+  if (!d.sites.length && d.loading) { setTimeout(sondeSitesLoad, 5000); $("sondeSitesNote").textContent = "Launch sites: downloading from SondeHub…"; return; }
+  sondeSites = d.sites;
+  sondeSitesLayer.clearLayers();
+  for (const s of sondeSites) {
+    const mk = L.circleMarker([s.lat, s.lon], { radius: 4, weight: 1.5, pane: "sondeSitesPane" })
+      .bindTooltip(escHtml(s.name), { direction: "top", offset: [0, -4] });
+    mk.site = s;
+    mk.bindPopup(() => sondeSitePopup(s), { maxWidth: 340 });
+    mk.addTo(sondeSitesLayer);
+  }
+  sondeSitesStyle();
+  if (d.error && !d.sites.length) $("sondeSitesNote").textContent = d.error;
+  if (d.extra_error) $("sondeSitesNote").textContent += ` · ${d.extra_error}`;
+  if (!sondeSitesTimer) sondeSitesTimer = setInterval(sondeSitesStyle, 60000);
+}
+
+/** The sites layer with a switch on the map (remembered in the browser). */
+function sondeSitesInit() {
+  sondeMap.createPane("sondeSitesPane").style.zIndex = 390;   // under the sondes and their tracks
+  sondeSitesLayer = L.layerGroup();
+  if (recall("sondeSites") !== "0") sondeSitesLayer.addTo(sondeMap);
+  L.control.layers(null, { "Launch sites": sondeSitesLayer }, { collapsed: false, position: "topright" }).addTo(sondeMap);
+  sondeMap.on("overlayadd overlayremove", (e) => { if (e.layer === sondeSitesLayer) store("sondeSites", e.type === "overlayadd" ? "1" : "0"); });
+  sondeSitesLoad();
 }
 
 async function renderSondeMap() {
@@ -6577,6 +6703,17 @@ $("sondeOn").addEventListener("change", () => {
   st.sonde = $("sondeOn").checked;
   $("sondeCard").hidden = !st.sonde;
   send({ sonde: st.sonde });
+});
+// 403 MHz: the middle of the sonde band in FM (the mode locally first, the frequency, then the mode to the server,
+// like the KNOWN… list of RTTY); the server moves the dongle when 403 MHz is outside its band; the decoder goes on
+const SONDE_MID_HZ = 403000000;
+$("sondeGo").addEventListener("click", () => {
+  if (!st) return;
+  const fm = st.mode !== "FM";
+  if (fm) { st.mode = "FM"; renderControls(); }
+  tune(SONDE_MID_HZ);
+  if (fm) send({ mode: "FM" });
+  if (!st.sonde) { $("sondeOn").checked = true; $("sondeOn").dispatchEvent(new Event("change")); }
 });
 $("sondeClear").addEventListener("click", () => { sondePost({ action: "clear" }).then(renderSondeInfo); sondeReset(); });
 $("sondeViews").addEventListener("click", (e) => { const b = e.target.closest("button[data-view]"); if (b) setSondeView(b.dataset.view); });
@@ -7211,6 +7348,7 @@ function ismRow(tr, m) {
     `<td class="data" title="${escHtml(m.raw ? `Not decoded${m.flex ? ` · rtl_433 flex decoder: ${m.flex}` : ""}` : m.mic ? `Check: ${m.mic}` : "")}">` +
     `${m.mic ? `<span class="ism-mic" title="Message check passed: ${escHtml(m.mic)}">✓</span>` : ""}${pulses}${escHtml(m.text)}` +
     `${m.view ? `<a class="pdv" href="${escHtml(m.view)}" target="_blank" rel="noopener" title="Show the pulses at triq.org/pdv">⧉</a>` : ""}` +
+    `${m.raw ? `<button class="ism-mark" data-mark="${m.id}" title="${key ? "Rename this marked signal" : "Mark this signal with a name (e.g. your car key): its later packages (same modulation, ±30 kHz, about the same number of pulses) become a device in DEVICES and TIMELINE"}">✎</button>` : ""}` +
     `${m.n > 1 ? `<span class="rep" title="Same message received ${m.n} times, each within ${m.raw ? "10 s" : "1 min"} of the previous one">×${m.n}</span>` : ""}</td>`;
 }
 
@@ -7899,6 +8037,20 @@ $("ismDevGrid").addEventListener("click", (e) => {
   const b = e.target.closest("[data-act]");
   if (b) ismAct(card.dataset.key, b.dataset.act);
   else ismOpenDev(card.dataset.key);                     // the card itself: the tab of the device with its charts
+});
+$("ismRows").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-mark]");
+  if (!b) return;
+  const key = b.closest("tr").dataset.key;
+  if (key) { ismAct(key, "name"); return; }              // already marked: its name, as on its card
+  const name = prompt("Name of this signal (e.g. My car key). Its later packages become a device in DEVICES:", "");
+  if (!name || !name.trim()) return;
+  try {
+    const r = await fetch(vbase + "/api/ism", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "rawmark", id: Number(b.dataset.mark), name }) }).then((x) => x.json());
+    if (r.names) { ismNames = r.names; ismRefreshNames(); }
+    else if (r.error) alert(r.error);
+  } catch { /* the server is gone */ }
 });
 $("ismDevTab").addEventListener("click", (e) => { if (e.target.closest(".ism-tab-x")) { e.stopPropagation(); ismCloseDev(); } }, true);
 $("ismTlRows").addEventListener("click", (e) => {
@@ -10855,6 +11007,7 @@ function memDuplicates() {
 
 /** After a change of the memories: tags in the spectrum, names above the VFOs and the editor pages. */
 function renderMems() {
+  renderDabChannelMems();
   drawOverlays();   // memory tags in the spectrum
   renderVfoDisplays();   // memory name above each VFO
   renderMed();
@@ -12142,6 +12295,7 @@ function onStatus(s) {
   $("pocsagOn").checked = !!s.pocsag;
   $("pocsagCard").hidden = !s.pocsag;
   $("sondeOn").checked = !!s.sonde;
+  $("sondeGo").classList.toggle("active", s.tune_hz === SONDE_MID_HZ && s.mode === "FM");
   $("sondeCard").hidden = !s.sonde;
   renderHfdl(s);
   renderAis(s);
@@ -13962,6 +14116,7 @@ async function init() {
   renderFt8Bands(info.ft8_freqs);
   dabChannelList = info.dab_channels || [];
   $("dabChannel").innerHTML = (info.dab_channels || []).map(([n, f]) => `<option value="${n}">${n} · ${fmtMHz(f, 3)}</option>`).join("");
+  renderDabChannelMems();
   renderHfdlBands(info.hfdl_bands || [], info.hfdl_stations || []);
   renderAisBands(info.ais_center, info.ais_channels);
   renderAdsbBands(info.adsb_freq);
@@ -13990,11 +14145,13 @@ init();
   $("appFull").onclick = () => wv.postMessage("fullscreen");
   const led = $("logoLed");
   const tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
-  tip.textContent = "MAIN: switch RADIMCOM off (stops the receivers, decoders and recordings)";
+  tip.textContent = "MAIN: switch RADIMCOM off – this stops the whole RADIMCOM server: all VFOs, their receivers, " +
+    "decoders and recordings, and closes the app (nothing stays in the tray; the dongles are free)";
   led.prepend(tip);
   led.addEventListener("click", (e) => {
     e.preventDefault(); e.stopPropagation();          // the logo link (GitHub) stays for the letters only
-    if (confirm("MAIN: switch RADIMCOM off?\nThe receivers, decoders and recordings stop.")) wv.postMessage("power-off");
+    if (confirm("MAIN: switch RADIMCOM off?\n\nThis stops the whole RADIMCOM server: all VFOs, their receivers, decoders " +
+      "and recordings. The app closes and nothing stays running in the tray.")) wv.postMessage("power-off");
   });
   wv.addEventListener("message", (e) => {
     if (typeof e.data === "string" && e.data.startsWith("fullscreen:")) $("appFull").classList.toggle("on", e.data.endsWith("1"));

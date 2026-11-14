@@ -7,6 +7,8 @@ horizontal speed, direction and climb of the sonde, its flight path on a map, th
 
 1. Tune the VFO onto the sonde in **400–406 MHz** (the mode and filter do not matter, the decoder takes the baseband of
    the VFO; a few kHz off is fine, the **offset** in the status line shows how far the signal is from the dial).
+   **403 MHz** in the header of the page tunes the VFO to the middle of the band in FM and switches the decoder on
+   (the dongle moves there when 403 MHz is outside its band).
 2. Switch **ON** on the SONDE page. RS41 and DFM run at once, in both polarities.
 3. **SONDES**: the newest data of each sonde (serial, frequency, position, altitude, climb, km/h, direction, distance,
    azimuth / elevation from the station, GPS satellites, battery, state: rising, falling after the burst, landed, lost).
@@ -18,6 +20,42 @@ Around Bratislava (station JN88NC): Wien Hohe Warte (11035, 56 km, RS41, launche
 Prostějov, Budapest (403.2 MHz), Poprad-Gánovce (400.6 MHz), Praha, Graz, Linz, Zagreb – all RS41.
 DFM sondes are launched by the military (e.g. Záhorie, irregularly). A high sonde is heard 300–500 km away,
 one on the ground only a few km.
+
+## Launch sites on the map
+
+The MAP shows the radiosonde launch sites in Europe (the **Launch sites** switch in its top right corner, remembered in
+the browser). A click on a site: its name, WMO number and height, the sondes it launches with their frequency when known
+(green = types RADIMCOM decodes), the launch times (UTC), the next launch and whether its sonde is probably in the air
+now, the usual ascent / burst / descent, and its distance and azimuth from the QTH. **Green, pulsing** = launched within
+the last 2.5 h (the sonde is probably still in the air), **amber** = a launch within the next hour, **grey** = otherwise.
+The times of the list are the synoptic times; the balloon goes up about 45 min before them.
+
+The list comes from [SondeHub](https://sondehub.org) (`https://api.v2.sondehub.org/sites`): the server downloads it when
+the map first asks for it and keeps the European sites in `data\sonde_sites.json` for a week (all VFOs share it; without
+internet the last saved list is used). The type names follow the SondeHub tracker (MIT).
+
+### Own sites: `data\sonde_sites_extra.json`
+
+Sites SondeHub does not list (e.g. military ones such as Senica) or changes of a listed site go into
+`data\sonde_sites_extra.json` (not part of the package, kept on upgrade). It is a JSON list; each site needs `name`,
+`lat` and `lon`, the rest is optional:
+
+```json
+[
+  {"id": "senica", "name": "Senica (military)", "lat": 48.68, "lon": 17.37, "alt": 210,
+   "types": [{"name": "DFM-17", "mhz": 403.63}], "times": ["0:06:00"], "note": "irregular launches"},
+  {"id": "11747", "note": "Czech Army aerological station"}
+]
+```
+
+- `id`: any text for an own site; the WMO number (or SondeHub id) of a listed site changes that site instead (here
+  Prostějov gets a note), so its `name`, `lat` and `lon` can then be left out.
+- `types`: names as in the list (`RS41`, `DFM-09`, `DFM-17`, `M10`, …) or `{"name", "mhz"}`.
+- `times`: `"day:hh:mm"` in UTC, day `0` = every day, `1`–`7` = Monday–Sunday (synoptic time, launch ~45 min earlier).
+- `note`: a line of text in the popup. Own sites are marked *(own)*.
+
+The file is read at each opening of the map (no restart needed, reload the page); a broken file is reported under the
+map. The coordinates in the example are only an illustration – use the real position of the site.
 
 ## Types
 
