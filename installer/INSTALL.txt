@@ -164,7 +164,15 @@ Main Features
     there in USB with the decoder on.
   - NO BAUDOT: synchronous / encrypted FSK data is recognised (other speeds tried first) and its
     garbage text is not written.
-  - Fix: Auto speed no longer jumps from a speed that decodes well (45.45 -> 50 Bd with noise).
+  - Fix: Auto speed jumped from 45.45 to 50 Bd with noise; 50 Bd was not recognised below ~9 dB.
+- RTTY decoder more reliable (bench tests/rtty_bench.py, WAE contest recording): character errors
+  45 % -> 29 % on average.
+  - ATC (automatic threshold correction, as in fldigi): selective fading at 12 dB 57 % -> 28 %.
+  - Squelch per character: no more garbage from the noise between contest overs.
+  - The start of an over is decoded again from the buffer after the lock (clean signal 6-20 dB
+    9-14 % -> 0-2 %, 50 Bd / 450 Hz 0 % from 6 dB); text waits 1.5-4 s after a new lock.
+  - AFC prefers standard shifts and keeps the followed station while it listens (contest 18-34 % -> 4-7 %).
+  - Each over (or another station) starts a new line with its UTC time.
 Changes
 - Fix (by Brano, brjanicek): auto squelch - the noise of the channel from the spectrum was not initialised
   (a line glued into a comment).
