@@ -2768,7 +2768,38 @@ Key lit = on · fast blinking = a transmission is being transcribed · slow blin
           </div>
         </div>
         <!-- ===== DEBUG: where RADIMCOM spends its time (static/debug.js, dbgstats.py) ===== -->
-        <div class="set-panel dbg-panel" data-set-panel="dbg" role="tabpanel" hidden>
+        <div class="set-panel dbg-panel has-sub" data-set-panel="dbg" role="tabpanel" hidden>
+          <div class="set-subtabs" role="tablist">
+            <button class="key small on" data-set-sub="dbg:global" role="tab" aria-selected="true" title="Where RADIMCOM spends its time (the page and the servers)">GLOBAL</button>
+            <button class="key small" data-set-sub="dbg:atc" role="tab" aria-selected="false" title="ATC speech to text of this VFO: each transcribed transmission whole, with its time, frequency and the callsign found">ATC-AI</button>
+          </div>
+          <!-- ===== DEBUG › ATC-AI: the transcripts of the ATC key of this VFO (static/atc.js, atc.py) ===== -->
+          <div class="set-subpanel atc-dbg" data-set-subpanel="dbg:atc" role="tabpanel" hidden>
+            <div class="sdg-b k-ai" id="atcDbgB"><b>AI · ATC · SPEECH TO TEXT OF THIS VFO</b><i class="sdg-ico"><svg viewBox="0 0 16 16"><path d="M2.5 4.5h11v6h-6l-3 2.5v-2.5h-2z"/><path d="M5 7.5h1M7.5 7.5h1M10 7.5h1"/></svg></i>
+              <div class="atc-dbg-keys">
+                <button class="key small" id="atcDbgRun" title="Start / stop the ATC speech to text of this VFO (the same as AUDIO › ATC). It works only in AM on the airband 118–137 MHz">START</button>
+                <span class="atc-dbg-state" id="atcDbgState"></span>
+                <label class="wf-opt log-opt" title="Write each transmission to the daily log data\logs\atc\YYYY\MM\DD\atc_YYYY-MM-DD.txt (UTC): frequency, length, level, the text and the callsigns"><input type="checkbox" data-log="atc">LOG</label>
+                <button class="key small" id="atcDbgClr" title="Clear this list (only on this page; the log stays)">CLR</button>
+              </div>
+            </div>
+            <div class="sdg-b k-ai" id="atcDbgSetB"><b>WHISPER · SETTINGS FOR THE NEXT TRANSCRIPT · THE WHOLE STATION</b><i class="sdg-ico"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M3.6 12.4 5 11M11 5l1.4-1.4"/></svg></i>
+              <div class="atc-dbg-keys">
+                <label class="wf-opt" title="BEAM: how many guesses Whisper keeps while it writes the text. 5 = the most exact (default); 1 = fastest, but the test of 27.11. found fewer callsigns (33 vs 40 %) and was only ~4 % faster">BEAM <select id="atcSetBeam"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></label>
+                <label class="wf-opt" title="FALLBACK: when the text at temperature 0 looks wrong (repeated words, low certainty), Whisper tries again at 0.2, 0.4 … 1.0 (default). Off: one try only – less CPU on noisy transmissions, some of them give no text"><input type="checkbox" id="atcSetFallback">FALLBACK</label>
+                <label class="wf-opt" title="NO TIMESTAMPS: Whisper does not write the times of the segments (we do not use them): a little less CPU"><input type="checkbox" id="atcSetNoTs">NO TIMESTAMPS</label>
+                <label class="wf-opt atc-set-gap" title="GAP: how long the squelch must stay closed before the transmission is over and goes to Whisper (default 0.1 s). Shorter = the text sooner, but a pause inside a sentence may cut it in two; longer = whole sentences, the text later, and a quick reply may join the same transcript. Taken when you let go of the slider; double click = default">GAP<input type="range" id="atcSetGap" min="0.1" max="2" step="0.1" value="0.1"><span class="value" id="atcSetGapText">0.1 s</span></label>
+                <span class="atc-dbg-state"></span>
+                <button class="key small" id="atcSetDef" title="All Whisper settings back to the default (the prompt text too)">DEFAULT</button>
+              </div>
+              <label class="atc-set-row" title="INITIAL PROMPT: a text Whisper takes as heard just before the transmission. Names of the stations and airlines of your area and the phrases, spelled as you want them in the text, help it write them right. Too long or odd: it may write the prompt itself on noise. Saved when you leave the box"><span><input type="checkbox" id="atcSetPromptOn"> PROMPT</span><textarea id="atcSetPrompt" rows="2" maxlength="600" spellcheck="false"></textarea></label>
+              <label class="atc-set-row" title="HOTWORDS: words Whisper should prefer (e.g. callsigns of airlines, waypoints), separated by spaces or commas. Saved when you leave the box"><span><input type="checkbox" id="atcSetHotOn"> HOTWORDS</span><input type="text" id="atcSetHot" maxlength="600" spellcheck="false" placeholder="e.g. Ryanair Wizz Smartwings Bratislava"></label>
+            </div>
+            <div class="sdg-b k-log" id="atcDbgListB"><b>TRANSCRIPTS · UTC · MHz · the text → the callsign found · on the COMPOSITE map</b><i class="sdg-ico"><svg viewBox="0 0 16 16"><path d="M5.5 4h8M5.5 8h8M5.5 12h8"/><circle cx="2.8" cy="4" r=".9"/><circle cx="2.8" cy="8" r=".9"/><circle cx="2.8" cy="12" r=".9"/></svg></i>
+              <div class="atc-dbg-list" id="atcDbgList"></div>
+            </div>
+          </div>
+          <div class="set-subpanel" data-set-subpanel="dbg:global" role="tabpanel">
           <div class="setting">
             <div class="row"><span>Where RADIMCOM spends its time</span><span class="muted" id="dbgInfo"></span></div>
             <div class="dbg-keys">
@@ -2782,6 +2813,7 @@ Key lit = on · fast blinking = a transmission is being transcribed · slow blin
             <p class="note">Page: frames, everything that ran (functions, events of the servers, timers, frames, clicks),
               requests, what the browser reports as slow. Servers: CPU of each process and of each thread of every VFO,
               with the lines of code where it works. Measuring costs a little itself; STOP when done.</p>
+          </div>
           </div>
         </div>
         <!-- ===== LOGS: one place for the logs and data files (datafiles.py): FILES = the folder tree (browse, read, delete,

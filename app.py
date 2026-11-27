@@ -250,7 +250,7 @@ def save_config_later():
 
 # ---------- daily decoder logs (turned on with LOG in the decoder card) ----------
 
-LOG_KEYS = ("ft8", "wefax", "cw", "rtty", "sstv", "acars", "dsd", "ism", "packet", "pocsag", "hfdl", "ais", "adsb", "wspr", "msk144", "meteor", "q65", "bpsk", "navtex")
+LOG_KEYS = ("ft8", "wefax", "cw", "rtty", "sstv", "acars", "dsd", "ism", "packet", "pocsag", "hfdl", "ais", "adsb", "wspr", "msk144", "meteor", "q65", "bpsk", "navtex", "atc")
 _tag = cfg.get("vfo") or ""
 logs = {"ft8": DayLog("ft8", _tag), "wefax": DayLog("wefax", _tag), "sstv": DayLog("sstv", _tag), "dsd": DayLog("dsd", _tag), "ism": DayLog("ism", _tag), "packet": DayLog("packet", _tag), "pocsag": DayLog("pocsag", _tag), "hfdl": DayLog("hfdl", _tag), "ais": DayLog("ais", _tag), "adsb": DayLog("adsb", _tag),
         "cw": TextLog("cw", _tag), "rtty": TextLog("rtty", _tag)}
@@ -259,6 +259,7 @@ logs["msk144"] = DayLog("msk144", _tag)
 logs["q65"] = DayLog("q65", _tag)
 logs["bpsk"] = DayLog("bpsk", _tag)
 logs["navtex"] = DayLog("navtex", _tag)
+logs["atc"] = DayLog("atc", _tag)
 logs["meteor"] = DayLog("meteor", _tag)
 _saved_logged = {"wefax": None, "sstv": None}
 
@@ -320,6 +321,8 @@ def decoder_event(kind, data):
         elif kind == "bpsk" and log_on("bpsk"):
             logs["bpsk"].write(f"{_mhz(data['freq_hz'])} {data['baud']} Bd {data['framing']} {data['snr']:.1f} dB | "
                                f"{data['sat'] + ' ' if data['sat'] else ''}{data['text']} | {data['hex']}")
+        elif kind == "atc" and log_on("atc"):
+            logs["atc"].write(atc_mod.log_line(data), data.get("t"))
         elif kind == "navtex" and log_on("navtex"):
             logs["navtex"].write(navtex_mod.log_line(data))
         elif kind == "msk144" and log_on("msk144"):
@@ -386,7 +389,7 @@ msk_dec = Msk144Decoder(on_decode=lambda d: decoder_event("msk144", d))
 q65_dec = q65_mod.Q65Decoder(on_decode=lambda d: decoder_event("q65", d), on_cycle=lambda i: hub.event("q65cycle", i))
 bpsk_dec = bpsk_mod.BpskDecoder(on_decode=lambda d: decoder_event("bpsk", d), on_stat=lambda d: hub.event("bpskstat", d))
 navtex_dec = navtex_mod.NavtexDecoder(on_event=decoder_event)
-atc_stt = atc_mod.AtcStt(on_event=lambda k, d: hub.event(k, d), on_state=lambda: hub.event("status", state()))   # ATC key: airband speech to text
+atc_stt = atc_mod.AtcStt(on_event=decoder_event, on_state=lambda: hub.event("status", state()))   # ATC key: airband speech to text
 meteors = meteor.MeteorCounter(_tag, on_echo=lambda e: decoder_event("meteor", e))
 
 

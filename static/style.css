@@ -5216,6 +5216,28 @@ details[data-sec=vmaps] > .map-opts-body:empty { display: none; }
 .dbg-out { margin: 0; padding: 6px; min-height: 120px; max-height: 62vh; overflow: auto; border: 1px solid var(--line);
   border-radius: 4px; background: rgba(0, 0, 0, .35); font: 11px/1.35 ui-monospace, Consolas, monospace; white-space: pre;
   user-select: text; cursor: text; }
+.set-panel.dbg-panel.has-sub { display: flex; }
+.dbg-panel > .set-subpanel { grid-template-columns: minmax(0, 1fr); max-width: none; }   /* DEBUG sub-pages: the whole width */
+/* SETTINGS › DEBUG › ATC-AI (static/atc.js): the key row, then the transcripts whole (wrapped), the callsign at the end */
+.atc-dbg-keys { display: flex; align-items: center; gap: 8px; min-width: 0; padding-right: 24px; }
+.atc-dbg-state { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; }
+.atc-dbg-list { max-height: 62vh; min-height: 120px; overflow-y: auto; font: 12px/1.4 ui-monospace, Consolas, monospace; color: var(--text);
+  user-select: text; }
+.atc-dbg-m { white-space: nowrap; }
+.atc-dbg-yes { color: var(--green); font-weight: 700; }
+.atc-dbg-no { color: var(--red); }
+.atc-dbg-row { display: grid; grid-template-columns: 8ch 8ch minmax(0, 1fr) 18ch 8ch; gap: 10px; padding: 2px 0; border-bottom: 1px solid var(--line); }
+.atc-dbg-t, .atc-dbg-f { color: var(--muted); white-space: nowrap; }
+.atc-dbg-x { white-space: normal; overflow-wrap: anywhere; }
+.atc-dbg-c { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.atc-dbg-cs { color: var(--amber); font-weight: 700; }
+.atc-dbg-cs.near { color: var(--accent); }
+.atc-dbg-empty { padding: 8px 0; font-family: system-ui, sans-serif; }
+.atc-set-gap input[type="range"] { width: 110px; margin: 0; }
+.atc-set-gap .value { display: inline-block; width: 5ch; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text); }
+.atc-set-row { display: grid; grid-template-columns: 12ch minmax(0, 1fr); gap: 8px; align-items: start; font-size: 11px; color: var(--muted); }
+.atc-set-row > span { display: flex; align-items: center; gap: 4px; padding-top: 3px; white-space: nowrap; }
+.atc-set-row textarea, .atc-set-row input[type="text"] { width: 100%; box-sizing: border-box; font: 12px/1.35 ui-monospace, Consolas, monospace; resize: vertical; }
 
 /* IQ PLAYER (static/iqplay.js): the bar above the tabs, the virtual dongle (blue, blinking) on the VFO, OPEN window */
 .iqp-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; margin-bottom: 4px; border: 1px solid rgba(255, 140, 26, .55);

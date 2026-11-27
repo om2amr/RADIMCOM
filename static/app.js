@@ -12082,6 +12082,7 @@ function setSubOpened(name) {
   if (name === "gen:recs") setTimeout(() => recDirLoad());
   if (name === "gen:backup") setTimeout(() => bkLoad());                   // SETTINGS › GENERAL › BACKUP (declared further down)
   if (name.startsWith("logs:")) setTimeout(() => lgOpened(name));          // SETTINGS › LOGS (declared further down)
+  if (name === "dbg:atc") setTimeout(() => atcDbgOpened());                // SETTINGS › DEBUG › ATC-AI (atc.js)
   if (name === "" && !document.querySelector('[data-set-panel="sta"]').hidden) setTimeout(sdgStart);   // STATION: no sub-pages
   if (name === "" && !document.querySelector('[data-set-panel="rtl"]').hidden) setTimeout(rtlStart);   // RTL_TCP: no sub-pages
   if (name === "" && !document.querySelector('[data-set-panel="fr24"]').hidden) setTimeout(fr24SetStart);   // FR24 RECEIVER (fr24.js)
@@ -12195,6 +12196,8 @@ for (const b of document.querySelectorAll("[data-set-sub]")) {
   const t = recall("setTab");
   const logsSub = recall("setSub_logs");
   if (logsSub && document.querySelector(`[data-set-sub="${logsSub}"]`)) showSetSub(logsSub);
+  const dbgSub = recall("setSub_dbg");
+  if (dbgSub && document.querySelector(`[data-set-sub="${dbgSub}"]`)) showSetSub(dbgSub);
   showSetTab(t === "vfo" || (oldTab && oldTab.startsWith("vfo:")) ? "vfo" : t === "sta" || t === "rtl" || t === "logs" || t === "src" || t === "dbg" ? t : "gen");
 }
 
@@ -16158,7 +16161,7 @@ $("lgViewClose").addEventListener("click", lgViewClose);
 
 // LOGGING: the LOG switch of every decoder on every VFO (from their states), and what is always written
 const LG_LOGS = [["ft8", "FT8"], ["cw", "CW"], ["rtty", "RTTY"], ["wefax", "WEFAX"], ["sstv", "SSTV"], ["acars", "ACARS / VDL2"],
-  ["hfdl", "HFDL"], ["ais", "AIS"], ["adsb", "ADS-B"], ["ism", "ISM"], ["packet", "PACKET"], ["pocsag", "POCSAG"], ["dsd", "DSD"], ["wspr", "WSPR"], ["msk144", "MSK144"], ["q65", "Q65 / JT65"], ["bpsk", "BPSK"], ["meteor", "GRAVES"], ["navtex", "NAVTEX"]];
+  ["hfdl", "HFDL"], ["ais", "AIS"], ["adsb", "ADS-B"], ["ism", "ISM"], ["packet", "PACKET"], ["pocsag", "POCSAG"], ["dsd", "DSD"], ["wspr", "WSPR"], ["msk144", "MSK144"], ["q65", "Q65 / JT65"], ["bpsk", "BPSK"], ["meteor", "GRAVES"], ["navtex", "NAVTEX"], ["atc", "ATC · AI"]];
 const LG_ALWAYS = [["SCAN activities", "logs\\scan", "every activity of the scan; kept KEEP HISTORY days (⚙ of SCAN, default 31)"],
   ["RADIOSONDE flights", "logs\\radiosonde", "every frame while SONDE runs (the history of the sonde map 1D / 7D); kept until deleted"],
   ["COMPOSITE map history", "composite_<VFO>.json", "positions of the last 6 hours per VFO, written every 2 min (HISTORY)"],

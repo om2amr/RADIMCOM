@@ -25,17 +25,22 @@ function atcStatus(s) {
   if (k.dataset.tip0 == null) k.dataset.tip0 = k.getAttribute("title") || "";
   const tip = k.dataset.tip0 + (s.atc && s.atc_state === "error" ? `\n\nNow: ${s.atc_error || "error"}` : "");
   if (k._tip !== tip) { k._tip = tip; k.title = tip; }
+  atcDbgStatus(s);
 }
 
-$("atcKey").addEventListener("click", async () => {
-  if (!st || !atcHere(st)) return;
-  const on = !st.atc;
+/** ATC on / off for this VFO (the ATC key and DEBUG › ATC-AI › START / STOP). */
+async function atcSet(on) {
   st.atc = on;
   $("atcKey").classList.toggle("on", on);
   if (!on) atcLast = null;
+  atcDbgStatus(st);
   try {
     await fetch(vbase + "/api/atc", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ on }) });
   } catch { /* the state from the server corrects the key */ }
+}
+
+$("atcKey").addEventListener("click", () => {
+  if (st && atcHere(st)) atcSet(!st.atc);
 });
 
 // ----- COMPOSITE: the aircraft of the callsign heard is selected (red, its details on the right) -----
@@ -63,6 +68,11 @@ function atcComSelect(cs, pan) {
   if (comMap && pan) comMap.panTo([m.lat, m.lon]);
   renderComMap();
   return true;
+}
+
+/** The COMPOSITE map loads its aircraft only while it is open (comShown): otherwise "on the map" is not known. */
+function atcMapKnown() {
+  return typeof comTimer !== "undefined" && !!comTimer;
 }
 
 /** The ICAO callsigns of the aircraft on the COMPOSITE map (normalised by atcNorm). */
@@ -166,9 +176,138 @@ function atcText(d) {
   // the first callsign found on the map (an exact one first) is selected there
   const calls = [...(d.calls || [])].sort((a, b) => b.exact - a.exact);
   d.onMap = calls.map((c) => c.cs).filter((cs) => atcComFind(cs));
+  d.mapKnown = atcMapKnown();
   if (d.onMap.length) atcComSelect(d.onMap[0], false);
   atcLast = d;
+  atcDbgAdd(d);
 }
+
+// ----- SETTINGS › DEBUG › ATC-AI: every transcript of this VFO whole: UTC, MHz, the text → the callsign found -----
+
+var ATC_DBG_MAX = 300;             // rows kept on the page
+var atcDbgBase = null;             // the VFO whose history is shown (vbase)
+var atcDbgCut = 0;                 // CLR: rows up to this id are not shown again
+
+function atcDbgVisible() {
+  const p = document.querySelector('[data-set-subpanel="dbg:atc"]');
+  return !!p && !p.hidden && !p.closest("[hidden]");
+}
+
+/** One row: time, frequency, the whole text, the callsign(s) at the end (matched to an aircraft on the map: ≈). */
+function atcDbgRow(d) {
+  const t = new Date(d.t * 1000).toISOString().slice(11, 19);
+  const calls = (d.calls || []).filter((c) => c.cs);
+  const cs = calls.map((c) => {
+    const tip = c.bynum ? `heard ${c.heard || "?"}, the aircraft on the map that fits best${c.alt ? " (one of two alike)" : ""}`
+      : c.exact ? "said whole" : "found in the text";
+    return `<span class="atc-dbg-cs${c.bynum ? " near" : ""}" title="${escHtml(tip)}">${c.bynum ? "≈" : ""}${escHtml(c.cs)}</span>`;
+  }).join(" ");
+  const map = !calls.length ? '<span class="muted" title="no callsign to look for">—</span>'
+    : !d.mapKnown ? '<span class="muted" title="The COMPOSITE map was not open at that time: its aircraft were not loaded, so it is not known">map ?</span>'
+    : (d.onMap || []).length ? `<span class="atc-dbg-yes" title="On the COMPOSITE map: ${escHtml(d.onMap.join(", "))}">map yes</span>`
+    : '<span class="atc-dbg-no" title="No aircraft with this callsign on the COMPOSITE map (not heard by ADS-B / FR24 / the other sources)">map no</span>';
+  const info = `${d.dur} s of voice, ${d.rms} dBFS, transcribed in ${d.cpu} s${d.opt ? `\nWhisper: ${d.opt}` : ""}`;
+  return `<div class="atc-dbg-row" data-id="${d.id}"><span class="atc-dbg-t" title="${escHtml(info)}">${t}</span>` +
+    `<span class="atc-dbg-f">${(d.hz / 1e6).toFixed(3)}</span><span class="atc-dbg-x">${escHtml(d.text)}</span>` +
+    `<span class="atc-dbg-c">→ ${cs || '<span class="muted" title="no callsign found in the text">—</span>'}</span>` +
+    `<span class="atc-dbg-m">${map}</span></div>`;
+}
+
+/** A new transcript (the "atc" event): on top of the list. */
+function atcDbgAdd(d) {
+  const box = $("atcDbgList");
+  if (!box || atcDbgBase !== vbase || d.id <= atcDbgCut) return;
+  box.querySelector(".atc-dbg-empty")?.remove();
+  box.insertAdjacentHTML("afterbegin", atcDbgRow(d));
+  while (box.children.length > ATC_DBG_MAX) box.lastElementChild.remove();
+}
+
+/** The sub-page was opened (or the VFO changed): the history of this VFO from the server. */
+async function atcDbgOpened() {
+  atcDbgBase = vbase;
+  atcDbgStatus(st);
+  let h = [], r = null;
+  try { r = await fetch(vbase + "/api/atc").then((x) => x.json()); h = r.history || []; } catch { /* the server is away */ }
+  if (atcDbgBase !== vbase) return;
+  if (r && r.settings) { atcSetDefaults = r.defaults || atcSetDefaults; atcSetShow(r.settings); }
+  if (h.length && h[h.length - 1].id < atcDbgCut) atcDbgCut = 0;     // the server started again: its ids from 1
+  h = h.filter((d) => d.id > atcDbgCut);
+  for (const d of h) {             // the map of now (the history has no "on map" of its time)
+    atcResolve(d);
+    d.onMap = (d.calls || []).map((c) => c.cs).filter((cs) => cs && atcComFind(cs));
+    d.mapKnown = atcMapKnown();
+  }
+  $("atcDbgList").innerHTML = h.length ? h.reverse().map(atcDbgRow).join("")
+    : '<div class="atc-dbg-empty muted">No transcript yet. START, then tune an airband channel in AM with the squelch set.</div>';
+}
+
+/** The START / STOP key, the state and the border of the block from the state of the VFO. */
+function atcDbgStatus(s) {
+  const k = $("atcDbgRun");
+  if (!k || !s) return;
+  if (atcDbgBase !== null && atcDbgBase !== vbase && atcDbgVisible()) { atcDbgCut = 0; atcDbgOpened(); return; }
+  const here = atcHere(s), on = !!s.atc, err = on && s.atc_state === "error";
+  k.textContent = on ? "STOP" : "START";
+  k.classList.toggle("on", on);
+  const txt = !on ? "off" : err ? `error: ${s.atc_error || "?"}` : !here ? "waiting: only in AM on the airband 118–137 MHz"
+    : { loading: "loading the model…", busy: "transcribing…", ready: "listening" }[s.atc_state] || s.atc_state || "";
+  const el = $("atcDbgState");
+  if (el.textContent !== txt) { el.textContent = txt; el.title = txt; }
+  const b = $("atcDbgB");
+  b.classList.toggle("lit", on && !err && here);
+  b.classList.toggle("warn", on && !err && !here);
+  b.classList.toggle("bad", err);
+}
+
+$("atcDbgRun").addEventListener("click", () => { if (st) atcSet(!st.atc); });
+
+// ----- the Whisper settings (atc.py transcribe_args, data\atc.json): taken at the next transcript, on every VFO -----
+
+var atcSetDefaults = null;
+
+function atcSetShow(s) {
+  $("atcSetBeam").value = String(s.beam);
+  $("atcSetFallback").checked = !!s.fallback;
+  $("atcSetNoTs").checked = !!s.no_ts;
+  if (document.activeElement !== $("atcSetGap")) atcSetGapShow(s.gap);
+  $("atcSetPromptOn").checked = !!s.prompt_on;
+  if (document.activeElement !== $("atcSetPrompt")) $("atcSetPrompt").value = s.prompt || "";
+  $("atcSetHotOn").checked = !!s.hotwords_on;
+  if (document.activeElement !== $("atcSetHot")) $("atcSetHot").value = s.hotwords || "";
+}
+
+async function atcSetSend(part) {
+  try {
+    const r = await fetch(vbase + "/api/atc", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: part }) }).then((x) => x.json());
+    if (r.settings) atcSetShow(r.settings);
+  } catch { /* the server is away: the next opening shows what is saved */ }
+}
+
+$("atcSetBeam").addEventListener("change", (e) => atcSetSend({ beam: Number(e.target.value) }));
+$("atcSetFallback").addEventListener("change", (e) => atcSetSend({ fallback: e.target.checked }));
+$("atcSetNoTs").addEventListener("change", (e) => atcSetSend({ no_ts: e.target.checked }));
+$("atcSetPromptOn").addEventListener("change", (e) => atcSetSend({ prompt_on: e.target.checked }));
+$("atcSetPrompt").addEventListener("change", (e) => atcSetSend({ prompt: e.target.value }));
+$("atcSetHotOn").addEventListener("change", (e) => atcSetSend({ hotwords_on: e.target.checked }));
+$("atcSetHot").addEventListener("change", (e) => atcSetSend({ hotwords: e.target.value }));
+$("atcSetDef").addEventListener("click", () => { if (atcSetDefaults) atcSetSend(atcSetDefaults); });
+function atcSetGapShow(v) {
+  $("atcSetGap").value = v;
+  $("atcSetGapText").textContent = `${Number(v).toFixed(1)} s`;
+}
+$("atcSetGap").addEventListener("input", (e) => atcSetGapShow(e.target.value));
+$("atcSetGap").addEventListener("change", (e) => { atcSetSend({ gap: Number(e.target.value) }); e.target.blur(); });
+$("atcSetGap").addEventListener("dblclick", () => {
+  const d = atcSetDefaults ? atcSetDefaults.gap : 0.1;
+  atcSetGapShow(d);
+  atcSetSend({ gap: d });
+});
+$("atcDbgClr").addEventListener("click", () => {
+  const top = $("atcDbgList").querySelector(".atc-dbg-row");
+  if (top) atcDbgCut = Math.max(atcDbgCut, Number(top.dataset.id));
+  $("atcDbgList").innerHTML = '<div class="atc-dbg-empty muted">Cleared. New transcripts come here.</div>';
+});
 
 /** The AD shows nothing of ATC (the key blinks while transcribing; the texts: GET /api/atc). */
 function atcAdOn() {
