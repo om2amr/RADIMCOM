@@ -465,14 +465,36 @@ browser – and the **CUE** key of that VFO (orange LED): that VFO stays audible
     With the **RX Doppler** of a satellite on, its orange chip in DECODERS leads an orange line **DOPPLER → VFO** along the bottom
     of the row back into the VFO block: the correction retunes the VFO frequency. Lit = on, faint = off. It is
     read-only (a click on a row does nothing). The open page is remembered in the browser.
-  - <a id="debug"></a>**DEBUG** (`static/debug.js`, `dbgstats.py`): where RADIMCOM spends its time, as text to copy into a
-    report. **START** / **STOP** / **RESET** / **COPY**; it keeps measuring while other tabs are open.
+  - <a id="debug"></a>**DEBUG**, two sub-tabs over the whole width. **GLOBAL** (`static/debug.js`, `dbgstats.py`): where
+    RADIMCOM spends its time, as text to copy into a report. **START** / **STOP** / **RESET** / **COPY**; it keeps
+    measuring while other tabs are open.
     - **Page:** frames (how many came late, the worst), the busy share of the main thread, long tasks, everything that ran
       with its own and total time (every global function, the events of the servers by kind, clicks, timers, animation
       frames, each with its place in the code), slow frames as the browser reports them (with forced layout), requests
       by VFO and path, JS heap and the size of the DOM.
     - **Servers:** CPU and memory of every process (launcher, each VFO, the window) and of every thread of each VFO, with
       the lines of Python where it works (sampled 50 times a second, `/api/debug/threads`).
+
+    **ATC-AI** (`static/atc.js`, `atc.py`): the ATC speech to text of the VFO shown.
+    - **START** / **STOP**: the same as AUDIO › ATC (it works only in AM on the airband 118–137 MHz); the state next to
+      it (listening, transcribing, loading the model, waiting off the airband, error). **LOG** writes each transmission to
+      `data\logs\atc\YYYY\MM\DD\atc_YYYY-MM-DD.txt` (UTC, frequency, length, level, the text and the callsigns). **CLR**
+      clears the list on the page.
+    - **WHISPER** (one setting for the whole station, `data\atc.json`, taken at the next transcript):
+      - **BEAM** 1–5 (default 5): how many guesses Whisper keeps; 1 is only ~4 % faster and finds fewer callsigns.
+      - **FALLBACK** (default on): a text that looks wrong is tried again at higher temperatures. On noise this is
+        where most of the CPU goes (2 s of noise: 20 s with it); off = one try, some noisy transmissions give no text.
+      - **NO TIMESTAMPS**: no times of the segments (not used), a little less CPU.
+      - **GAP** 0.1–2.0 s (default 0.1 s): how long the squelch stays closed before the transmission goes to Whisper.
+        Shorter = the text sooner, a pause in a sentence may cut it; longer = whole sentences, a quick reply may join.
+      - **PROMPT** (off by default, a text for the Bratislava / Wien area filled in): text Whisper takes as heard just
+        before; names of stations, airlines and phrases spelled as you want them. **HOTWORDS**: words to prefer
+        (airlines, waypoints). On noise Whisper may write a piece of the prompt itself: a text that is only a piece of the
+        prompt or the hotwords is dropped.
+      - **DEFAULT**: all back. The tooltip of the time of each transcript shows the settings it was made with.
+    - **TRANSCRIPTS**, the newest on top: UTC, MHz, the whole text, **→ the callsign** found (≈ = joined by its number
+      to the aircraft on the map that fits best) and **map yes / no** (an aircraft with that callsign on the COMPOSITE
+      map; **map ?** when the map was not open, as it loads its aircraft only then).
 
 - **MENU → MEM**: frequency memories. While the MEM key is lit, the bottom part has a **MEMORIES** tab (beside DECODERS,
   SATELLITES and SETTINGS) that covers the spectrum and waterfall like the other tabs; the MEM key is one switch for all VFOs,

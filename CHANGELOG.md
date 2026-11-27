@@ -20,14 +20,30 @@ Test beta (GitHub branch `1.2beta5`; continues 1.2beta4).
 - A click on a row of the list selects the object without moving the map; a callsign heard by ATC speech to text selects
   its aircraft without moving the map either.
 - STCA: the prediction line of an aircraft in conflict is 2 minutes long (was 3).
+- **Maps bar:** a right click on a memory renames or deletes it (asked first; an emptied memory gets its default name
+  back) *(by Brano, [brjanicek](https://github.com/brjanicek))*.
 - The detail: the sources line cut with … (whole in the tooltip), the adsb.fi / adsb.lol links always whole; the
   identifiers in SOURCES wrap instead of being cut.
 
 #### ATC speech to text
 
 - **AI · ATC** block in SETTINGS › STATION under AUDIO (the voice after the demodulator → Whisper → the COMPOSITE map).
-- The text comes sooner: a transmission ends after 0.4 s of closed squelch (was 0.6 s); the model uses 8 CPU threads
-  (about 20 % faster).
+- The text comes sooner: a transmission ends after 0.1 s of closed squelch by default (was 0.6 s; GAP in DEBUG ›
+  ATC-AI); the model uses 8 CPU threads (about 20 % faster).
+- **SETTINGS › DEBUG › ATC-AI**: START / STOP, the transcripts whole (UTC, MHz, the text → the callsign found, whether
+  that aircraft is on the COMPOSITE map) and the Whisper settings for the whole station: BEAM, FALLBACK (on noise most
+  of the CPU), NO TIMESTAMPS, GAP after the squelch, an initial PROMPT and HOTWORDS (a text that is only a piece of
+  them, as Whisper writes on noise, is dropped). DEBUG has two sub-tabs now: GLOBAL (as before) and ATC-AI.
+- **Daily log** of the transcripts (LOG in DEBUG › ATC-AI or SETTINGS › DATA/LOG): `data\logs\atc`.
+
+#### ISM *(by Brano, [brjanicek](https://github.com/brjanicek))*
+
+- **Weak devices at 433.92 MHz:** three more narrow channels (433.89, 433.93, 434.01 MHz, 64 kS/s) with a lower minimum
+  level (`-Y minlevel=-35 -Y minsnr=4`): on two test recordings 205 and 220 different transmissions instead of 74 and 95.
+  The same message read by two channels counts once.
+- **Much less CPU:** all channels are cut by one shared FFT instead of a mixer and a filter each: RADIMCOM 42 % → 10 %
+  of a core at 433.92 MHz (the rtl_433 processes 2 % → 3 %, their memory 130 → 250 MB with six instead of three).
+- The channels stay on their frequencies when the VFO is dragged away from the preset in the spectrum.
 
 #### General
 

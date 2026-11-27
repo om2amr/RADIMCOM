@@ -87,8 +87,14 @@ PROPAGATION
 - Kp chart: today's forecast no longer drawn as measured; a begun interval shows the Kp measured in it.
 COMPOSITE map
 - Photo of the selected aircraft from Planespotters.net; a click in the list no longer moves the map; STCA prediction 2 min.
+- Maps bar: a right click on a memory renames or deletes it (by Brano).
 ATC speech to text
-- AI · ATC block in SETTINGS > STATION; the text sooner (0.4 s gap, 8 CPU threads).
+- AI · ATC block in SETTINGS > STATION; the text sooner (0.1 s gap, 8 CPU threads).
+- SETTINGS > DEBUG > ATC-AI: the transcripts whole with the callsign and "on the map", Whisper settings (beam, fallback,
+  gap, initial prompt, hotwords); daily log data\logs\atc.
+ISM (by Brano)
+- Three more narrow channels at 433.92 MHz with a lower level: about 2-3x more transmissions on test recordings.
+- One shared FFT for all channels: about 42 % -> 10 % of a CPU core.
 General
 - Tooltips stay open while the panel under the mouse is drawn again.
 
